@@ -14,6 +14,7 @@ public final class MangaCatalogViewModel: ObservableObject {
 
     private let bridge = ProviderZBridge.shared
     private let addonManager = MangaAddonManager.shared
+    private let libraryStore = MangaLibraryStore.shared
 
     public init() {
         Task {
@@ -38,6 +39,7 @@ public final class MangaCatalogViewModel: ObservableObject {
         isLoadingDetail = true
         Task {
             let detailed = await bridge.fetchDetail(for: item, addon: addonManager.activeAddon)
+            self.libraryStore.refresh(detailed)
             self.selectedManga = detailed
             self.isLoadingDetail = false
         }
@@ -62,6 +64,19 @@ public final class MangaCatalogViewModel: ObservableObject {
             chapter: progress.chapter,
             initialPageIndex: progress.pageIndex
         )
+    }
+
+    public func openFollowed(_ followed: MangaFollowedSeries) {
+        let addon = addonManager.addons.first(where: { $0.id == followed.addonID })
+            ?? addonManager.activeAddon
+        selectedManga = followed.sourceManga
+        isLoadingDetail = true
+        Task {
+            let detailed = await bridge.fetchDetail(for: followed.sourceManga, addon: addon)
+            libraryStore.refresh(detailed)
+            selectedManga = detailed
+            isLoadingDetail = false
+        }
     }
 }
 
@@ -154,6 +169,40 @@ struct MangaContinueReadingCard: View {
     }
 }
 
+struct MangaFollowedCard: View {
+    let series: MangaFollowedSeries
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            AsyncImage(url: URL(string: series.mangaCover)) { phase in
+                if let image = phase.image {
+                    image.resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    Color.white.opacity(0.1)
+                }
+            }
+            .frame(width: 96, height: 132)
+            .clipShape(RoundedRectangle(cornerRadius: 9))
+
+            Text(series.mangaTitle)
+                .font(.caption.weight(.semibold))
+                .foregroundColor(.white)
+                .lineLimit(1)
+                .frame(width: 96, alignment: .leading)
+
+            if series.unreadCount > 0 {
+                Text("\(series.unreadCount) chương mới")
+                    .font(.caption2.weight(.bold))
+                    .foregroundColor(.purple)
+            } else {
+                Text("Đã cập nhật")
+                    .font(.caption2)
+                    .foregroundColor(.gray)
+            }
+        }
+    }
+}
+
 // MARK: - Manga Detail Sheet
 struct MangaDetailSheet: View {
     let manga: MangaItem
@@ -161,6 +210,7 @@ struct MangaDetailSheet: View {
     let onSelectChapter: (MangaChapter) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var showChapterPicker = false
+    @ObservedObject private var libraryStore = MangaLibraryStore.shared
 
     var body: some View {
         NavigationStack {
@@ -224,6 +274,26 @@ struct MangaDetailSheet: View {
                                 .lineLimit(5)
                         }
                     }
+
+                    Button {
+                        if libraryStore.isFollowing(mangaID: manga.id) {
+                            libraryStore.unfollow(mangaID: manga.id)
+                        } else {
+                            libraryStore.follow(manga, addonID: MangaAddonManager.shared.activeAddon.id)
+                        }
+                    } label: {
+                        let isFollowing = libraryStore.isFollowing(mangaID: manga.id)
+                        Label(
+                            isFollowing ? "Đang theo dõi" : "Theo dõi truyện",
+                            systemImage: isFollowing ? "checkmark.circle.fill" : "plus.circle"
+                        )
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 11)
+                        .background(isFollowing ? Color.green.opacity(0.20) : Color.purple.opacity(0.22))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .foregroundColor(.white)
 
                     Divider().background(Color.white.opacity(0.1))
 
@@ -326,6 +396,7 @@ public struct MangaCatalogView: View {
     @StateObject private var viewModel = MangaCatalogViewModel()
     @ObservedObject private var addonManager = MangaAddonManager.shared
     @ObservedObject private var readingProgress = MangaReadingProgressStore.shared
+    @ObservedObject private var libraryStore = MangaLibraryStore.shared
 
     private let columns = [
         GridItem(.flexible(), spacing: 14),
@@ -349,6 +420,29 @@ public struct MangaCatalogView: View {
                             }
                             .buttonStyle(.plain)
                             .padding(.horizontal, 16)
+                        }
+
+                        if !libraryStore.followed.isEmpty {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("Đang theo dõi")
+                                    .font(.title3.bold())
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 16)
+
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 12) {
+                                        ForEach(libraryStore.followed) { series in
+                                            Button {
+                                                viewModel.openFollowed(series)
+                                            } label: {
+                                                MangaFollowedCard(series: series)
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                    }
+                                    .padding(.horizontal, 16)
+                                }
+                            }
                         }
 
                         // Thanh tìm kiếm

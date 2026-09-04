@@ -55,6 +55,7 @@ public final class MangaReaderViewModel: ObservableObject {
             pageIndex: currentPageIndex,
             pageCount: pages.count
         )
+        MangaLibraryStore.shared.markRead(mangaID: manga.id, chapterID: currentChapter.id)
     }
 
     public var hasPreviousChapter: Bool {
@@ -241,9 +242,6 @@ public struct MangaReaderView: View {
         .preferredColorScheme(.dark)
         .statusBarHidden(!viewModel.showControls)
         .onChange(of: viewModel.currentPageIndex) { _ in
-            viewModel.saveProgress()
-        }
-        .onChange(of: viewModel.currentChapter.id) { _ in
             viewModel.saveProgress()
         }
         .onDisappear {
