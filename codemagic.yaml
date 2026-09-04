@@ -8,9 +8,19 @@ workflows:
         - ~/.gradle/caches
         - ~/.gradle/wrapper
         - ~/.konan
+        # Cache kết quả biên dịch Kotlin/Native & Gradle của KMP core:
+        # các lần build sau chỉ biên dịch lại phần code thay đổi (incremental)
+        # thay vì compile lại toàn bộ từ đầu.
+        - $CM_BUILD_DIR/../composeApp/build
+        - $CM_BUILD_DIR/../.gradle
     environment:
       xcode: latest
       java: 17
+      vars:
+        # Debug: Kotlin/Native bỏ qua gần hết pha tối ưu LLVM -> nhanh gấp 3-5 lần.
+        # Phù hợp cho IPA unsigned dùng để test/sideload.
+        # Đổi lại thành "Release" nếu cần bản tối ưu hiệu năng để phát hành.
+        XCODE_CONFIGURATION: Debug
     scripts:
       - name: Chuẩn bị MPVKit và Kotlin Multiplatform Core
         script: |
@@ -104,6 +114,14 @@ workflows:
           filtered.append('kotlin.native.jvmArgs=-Xmx6144m -XX:+UseG1GC -XX:MaxMetaspaceSize=1024m')
           filtered.append('org.gradle.caching=true')
           filtered.append('org.gradle.parallel=true')
+          # Tăng tốc biên dịch Kotlin/Native & Gradle:
+          # - configuration-cache: bỏ qua pha cấu hình Gradle ở các lần build sau
+          # - incremental: chỉ biên dịch lại phần Kotlin thay đổi
+          # - cacheKind=static: cache sẵn thư viện native (stdlib, Compose, Ktor...)
+          #   vào ~/.konan (đã được Codemagic cache) thay vì compile lại mỗi lần
+          filtered.append('org.gradle.configuration-cache=true')
+          filtered.append('kotlin.incremental=true')
+          filtered.append('kotlin.native.cacheKind=static')
 
           with open(path, 'w', encoding='utf-8') as f:
               f.write('\n'.join(filtered) + '\n')
@@ -120,7 +138,7 @@ workflows:
 
       - name: Build Archive Xcode (Không cần Chứng chỉ - Unsigned)
         script: |
-          echo "=== Bắt đầu biên dịch Xcode Archive (Unsigned) ==="
+          echo "=== Bắt đầu biên dịch Xcode Archive (Unsigned) - Cấu hình: $XCODE_CONFIGURATION ==="
           
           # Thiết lập JAVA_HOME cho Gradle
           if [ -z "$JAVA_HOME" ]; then
@@ -138,7 +156,7 @@ workflows:
           xcodebuild \
             -project iosApp.xcodeproj \
             -scheme iosApp \
-            -configuration Release \
+            -configuration "$XCODE_CONFIGURATION" \
             -destination 'generic/platform=iOS' \
             -archivePath build/Nuvio.xcarchive \
             archive \
