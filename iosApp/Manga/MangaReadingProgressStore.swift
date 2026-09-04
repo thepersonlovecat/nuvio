@@ -56,6 +56,10 @@ public final class MangaReadingProgressStore: ObservableObject {
         entries.values.sorted { $0.updatedAt > $1.updatedAt }
     }
 
+    public func progress(for mangaID: String) -> MangaReadingProgress? {
+        entries[mangaID]
+    }
+
     private init() {
         guard let data = UserDefaults.standard.data(forKey: storageKey),
               let stored = try? JSONDecoder().decode([String: MangaReadingProgress].self, from: data) else {

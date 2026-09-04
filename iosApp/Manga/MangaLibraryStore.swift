@@ -92,6 +92,10 @@ public final class MangaLibraryStore: ObservableObject {
         Set(followed.first(where: { $0.mangaID == mangaID })?.readChapterIDs ?? [])
     }
 
+    public func isRead(mangaID: String, chapterID: String) -> Bool {
+        readChapterIDs(mangaID: mangaID).contains(chapterID)
+    }
+
     public func markAllRead(mangaID: String, chapters: [MangaChapter]) {
         guard let index = followed.firstIndex(where: { $0.mangaID == mangaID }) else { return }
         followed[index].readChapterIDs = Array(
