@@ -9,6 +9,7 @@ public struct MangaFollowedSeries: Codable, Identifiable, Hashable {
     public var addonID: String
     public var knownChapterIDs: [String]
     public var unreadChapterIDs: [String]
+    public var readChapterIDs: [String]?
     public var updatedAt: Date
 
     public var id: String { mangaID }
@@ -22,6 +23,7 @@ public struct MangaFollowedSeries: Codable, Identifiable, Hashable {
         self.addonID = addonID
         knownChapterIDs = manga.chapters?.map(\.id) ?? []
         unreadChapterIDs = []
+        readChapterIDs = []
         updatedAt = Date()
     }
 
@@ -79,8 +81,23 @@ public final class MangaLibraryStore: ObservableObject {
 
     public func markRead(mangaID: String, chapterID: String) {
         guard let index = followed.firstIndex(where: { $0.mangaID == mangaID }) else { return }
-        guard followed[index].unreadChapterIDs.contains(chapterID) else { return }
+        if !(followed[index].readChapterIDs ?? []).contains(chapterID) {
+            followed[index].readChapterIDs = (followed[index].readChapterIDs ?? []) + [chapterID]
+        }
         followed[index].unreadChapterIDs.removeAll { $0 == chapterID }
+        persist()
+    }
+
+    public func readChapterIDs(mangaID: String) -> Set<String> {
+        Set(followed.first(where: { $0.mangaID == mangaID })?.readChapterIDs ?? [])
+    }
+
+    public func markAllRead(mangaID: String, chapters: [MangaChapter]) {
+        guard let index = followed.firstIndex(where: { $0.mangaID == mangaID }) else { return }
+        followed[index].readChapterIDs = Array(
+            Set(followed[index].readChapterIDs ?? []).union(chapters.map(\.id))
+        )
+        followed[index].unreadChapterIDs = []
         persist()
     }
 

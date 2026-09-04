@@ -376,6 +376,7 @@ struct MangaDetailSheet: View {
             if let chapters = manga.chapters {
                 MangaChapterPickerView(
                     chapters: chapters,
+                    readChapterIDs: libraryStore.readChapterIDs(mangaID: manga.id),
                     onSelectChapter: { chapter in
                         showChapterPicker = false
                         // Let the picker dismiss before the detail sheet closes and
@@ -383,6 +384,9 @@ struct MangaDetailSheet: View {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                             onSelectChapter(chapter)
                         }
+                    },
+                    onMarkAllRead: {
+                        libraryStore.markAllRead(mangaID: manga.id, chapters: chapters)
                     }
                 )
                 .presentationDetents([.large])

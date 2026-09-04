@@ -19,6 +19,22 @@ private enum MangaChapterSort: String, CaseIterable, Identifiable {
     }
 }
 
+private enum MangaChapterReadFilter: String, CaseIterable, Identifiable {
+    case all
+    case unread
+    case read
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: return "Tất cả"
+        case .unread: return "Chưa đọc"
+        case .read: return "Đã đọc"
+        }
+    }
+}
+
 private extension MangaChapter {
     /// Providers use different labels ("12", "Chương 12.5", or a title).
     /// Extracting the first number makes chapter ordering numeric rather than lexical.
@@ -45,26 +61,39 @@ private extension String {
 /// complete chapter list provided by the active manga add-on.
 struct MangaChapterPickerView: View {
     private let chapters: [MangaChapter]
+    private let readChapterIDs: Set<String>
     private let onSelectChapter: (MangaChapter) -> Void
+    private let onMarkAllRead: () -> Void
     private let pageSize = 100
 
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var sort: MangaChapterSort = .newestFirst
+    @State private var readFilter: MangaChapterReadFilter = .all
     @State private var visibleLimit = 100
     @State private var jumpInput = ""
     @State private var jumpFeedback: String?
     @State private var jumpTargetID: String?
 
-    init(chapters: [MangaChapter], onSelectChapter: @escaping (MangaChapter) -> Void) {
+    init(
+        chapters: [MangaChapter],
+        readChapterIDs: Set<String>,
+        onSelectChapter: @escaping (MangaChapter) -> Void,
+        onMarkAllRead: @escaping () -> Void
+    ) {
         self.chapters = chapters
+        self.readChapterIDs = readChapterIDs
         self.onSelectChapter = onSelectChapter
+        self.onMarkAllRead = onMarkAllRead
     }
 
     private var matchingChapters: [(chapter: MangaChapter, sourceIndex: Int)] {
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let matching = chapters.enumerated().compactMap { index, chapter -> (MangaChapter, Int)? in
-            guard trimmedQuery.isEmpty || chapter.chapterSearchText.localizedCaseInsensitiveContains(trimmedQuery) else {
+            let matchesQuery = trimmedQuery.isEmpty || chapter.chapterSearchText.localizedCaseInsensitiveContains(trimmedQuery)
+            let isRead = readChapterIDs.contains(chapter.id)
+            let matchesReadState = readFilter == .all || (readFilter == .read && isRead) || (readFilter == .unread && !isRead)
+            guard matchesQuery && matchesReadState else {
                 return nil
             }
             return (chapter, index)
@@ -147,6 +176,10 @@ struct MangaChapterPickerView: View {
                                             }
                                         }
                                         Spacer()
+                                        if readChapterIDs.contains(chapter.id) {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .foregroundColor(.green)
+                                        }
                                         Image(systemName: "chevron.right")
                                             .font(.caption.weight(.bold))
                                             .foregroundColor(.secondary)
@@ -183,6 +216,15 @@ struct MangaChapterPickerView: View {
             .navigationTitle("Danh sách chương")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Menu {
+                        Button("Đánh dấu tất cả đã đọc") {
+                            onMarkAllRead()
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Đóng") { dismiss() }
                 }
@@ -227,6 +269,25 @@ struct MangaChapterPickerView: View {
                     Label(sort.title, systemImage: "arrow.up.arrow.down")
                         .font(.subheadline.weight(.medium))
                         .lineLimit(1)
+                }
+                .buttonStyle(.bordered)
+
+                Menu {
+                    ForEach(MangaChapterReadFilter.allCases) { option in
+                        Button {
+                            readFilter = option
+                            visibleLimit = pageSize
+                        } label: {
+                            if readFilter == option {
+                                Label(option.title, systemImage: "checkmark")
+                            } else {
+                                Text(option.title)
+                            }
+                        }
+                    }
+                } label: {
+                    Label(readFilter.title, systemImage: "line.3.horizontal.decrease.circle")
+                        .font(.subheadline.weight(.medium))
                 }
                 .buttonStyle(.bordered)
 
