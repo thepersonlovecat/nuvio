@@ -34,8 +34,13 @@ workflows:
           echo "Cấu hình settings.gradle.kts cho iOS..."
           python3 -c "p='../settings.gradle.kts'; c=open(p).read(); open(p,'w').write(c.replace('include(\":androidApp\")','// include(\":androidApp\")'))"
 
+          echo "Đồng bộ Configuration sang ../iosApp cho Gradle..."
+          mkdir -p ../iosApp
+          cp -r Configuration ../iosApp/
+
           echo "=== 3. Kiểm tra môi trường thư mục cha ==="
           ls -la ../
+          ls -la ../iosApp/Configuration
 
       - name: Build Archive Xcode (Không cần Chứng chỉ - Unsigned)
         script: |
