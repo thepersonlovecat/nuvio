@@ -37,9 +37,17 @@ workflows:
           mkdir -p ../iosApp
           cp -r Configuration ../iosApp/
 
-          echo "Tạo local.properties cho Gradle GenerateRuntimeConfigsTask..."
-          touch ../local.properties
-          touch local.properties
+          echo "Cấu hình tài khoản Nuvio (Supabase Backend) vào local.properties..."
+          cat << 'EOF' > ../local.properties
+NUVIO_SUPABASE_URL=https://api.nuvio.tv
+NUVIO_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzgxNTIxMzQ2LCJleHAiOjE5MzkyMDEzNDZ9.tmQaj682pwzehpqlgCDMnySOqiUvpgRbrE43T4VJpDI
+NUVIO_SUPABASE_FALLBACK_URL=https://api.nuvio.tv
+SUPPORTERS_WALL_URL=https://nuvio.tv/api/supporters/wall
+EOF
+          cp ../local.properties local.properties
+          export NUVIO_SUPABASE_URL="https://api.nuvio.tv"
+          export NUVIO_SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzgxNTIxMzQ2LCJleHAiOjE5MzkyMDEzNDZ9.tmQaj682pwzehpqlgCDMnySOqiUvpgRbrE43T4VJpDI"
+          export NUVIO_SUPABASE_FALLBACK_URL="https://api.nuvio.tv"
 
           echo "Vô hiệu hóa các pha tối ưu Kotlin/Native gây OOM khi link Release..."
           python3 << 'EOF'
@@ -111,6 +119,9 @@ workflows:
           # Thiết lập biến môi trường cấp phát 6GB RAM tối ưu cho Mac mini
           export GRADLE_OPTS="-Xmx6144M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1024m"
           export KOTLIN_DAEMON_JVMARGS="-Xmx6144M"
+          export NUVIO_SUPABASE_URL="https://api.nuvio.tv"
+          export NUVIO_SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzgxNTIxMzQ2LCJleHAiOjE5MzkyMDEzNDZ9.tmQaj682pwzehpqlgCDMnySOqiUvpgRbrE43T4VJpDI"
+          export NUVIO_SUPABASE_FALLBACK_URL="https://api.nuvio.tv"
 
           xcodebuild \
             -project iosApp.xcodeproj \
