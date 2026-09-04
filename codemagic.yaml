@@ -42,9 +42,12 @@ workflows:
           touch ../local.properties
           touch local.properties
 
+          echo "Cấu hình RAM 6GB cho Gradle Daemon và Kotlin Native Linker trong gradle.properties..."
+          python3 -c "p='../gradle.properties'; lines=[l for l in open(p).read().splitlines() if not l.startswith('org.gradle.jvmargs') and not l.startswith('kotlin.daemon')]; lines.append('org.gradle.jvmargs=-Xmx6144m -XX:+UseG1GC -XX:MaxMetaspaceSize=1024m'); lines.append('kotlin.daemon.jvmargs=-Xmx6144m'); open(p,'w').write('\n'.join(lines)+'\n')"
+
           echo "=== 3. Kiểm tra môi trường thư mục cha ==="
           ls -la ../
-          ls -la ../iosApp/Configuration
+          cat ../gradle.properties
 
       - name: Build Archive Xcode (Không cần Chứng chỉ - Unsigned)
         script: |
@@ -56,9 +59,9 @@ workflows:
           fi
           export PATH="$JAVA_HOME/bin:$PATH"
 
-          # Tối ưu RAM cho Gradle Daemon trên máy ảo Mac Mini (tránh OOM 12GB)
-          export GRADLE_OPTS="-Xmx4096M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1024m"
-          export KOTLIN_DAEMON_JVMARGS="-Xmx4096M"
+          # Tăng RAM cho Gradle và Kotlin Compiler Linker lên 6GB
+          export GRADLE_OPTS="-Xmx6144M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1024m"
+          export KOTLIN_DAEMON_JVMARGS="-Xmx6144M"
 
           xcodebuild \
             -project iosApp.xcodeproj \
