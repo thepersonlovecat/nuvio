@@ -136,4 +136,3 @@ workflows:
 
     artifacts:
       - build/*.ipa
-      - build/*.xcarchive
