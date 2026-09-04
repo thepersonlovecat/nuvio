@@ -5,22 +5,42 @@ workflows:
     instance_type: mac_mini_m2
     environment:
       xcode: latest
-      node: latest
+      java: 17
     scripts:
-      - name: Kiểm tra & Chuẩn bị môi trường build
+      - name: Chuẩn bị MPVKit và Kotlin Multiplatform Core
         script: |
-          echo "=== Thông tin môi trường ==="
-          xcodebuild -version
-          sw_vers
-
-          # Kiểm tra thư mục MPVKit nếu cần thiết
+          echo "=== 1. Chuẩn bị MPVKit Package ==="
           if [ ! -d "../MPVKit" ]; then
-            echo "MPVKit không tìm thấy ở thư mục cha, tiến hành kiểm tra..."
+            echo "Cloning MPVKit into ../MPVKit..."
+            git clone --depth 1 https://github.com/NuvioMedia/MPVKit.git ../MPVKit
           fi
+
+          echo "=== 2. Chuẩn bị ComposeApp & Gradle Build Core ==="
+          if [ ! -f "../gradlew" ] || [ ! -d "../composeApp" ]; then
+            echo "Tải KMP Core từ NuvioMobile (branch cmp-rewrite)..."
+            rm -rf /tmp/NuvioMobile
+            git clone --depth 1 --branch cmp-rewrite https://github.com/NuvioMedia/NuvioMobile.git /tmp/NuvioMobile
+            
+            cp -r /tmp/NuvioMobile/gradle* ../
+            cp -r /tmp/NuvioMobile/build.gradle.kts ../
+            cp -r /tmp/NuvioMobile/settings.gradle.kts ../
+            cp -r /tmp/NuvioMobile/composeApp ../
+            chmod +x ../gradlew
+          fi
+
+          echo "=== 3. Kiểm tra môi trường thư mục cha ==="
+          ls -la ../
 
       - name: Build Archive Xcode (Không cần Chứng chỉ - Unsigned)
         script: |
           echo "=== Bắt đầu biên dịch Xcode Archive (Unsigned) ==="
+          
+          # Thiết lập JAVA_HOME cho Gradle nếu chưa có
+          if [ -z "$JAVA_HOME" ]; then
+            export JAVA_HOME=$(/usr/libexec/java_home -v 17 2>/dev/null || echo "/opt/homebrew/opt/openjdk@17")
+          fi
+          export PATH="$JAVA_HOME/bin:$PATH"
+
           xcodebuild \
             -project iosApp.xcodeproj \
             -scheme iosApp \
