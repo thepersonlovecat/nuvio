@@ -1,5 +1,31 @@
 import SwiftUI
 
+private enum MangaReaderPreferences {
+    private static let readingModeKey = "nuvio_manga_reading_mode_v1"
+    private static let pageSpacingKey = "nuvio_manga_page_spacing_v1"
+
+    static var readingMode: ReadingMode {
+        guard let stored = UserDefaults.standard.string(forKey: readingModeKey),
+              let mode = ReadingMode(rawValue: stored) else {
+            return .webtoon
+        }
+        return mode
+    }
+
+    static var pageSpacing: CGFloat {
+        let stored = UserDefaults.standard.object(forKey: pageSpacingKey) as? Double
+        return CGFloat(stored ?? 2)
+    }
+
+    static func save(readingMode: ReadingMode) {
+        UserDefaults.standard.set(readingMode.rawValue, forKey: readingModeKey)
+    }
+
+    static func save(pageSpacing: CGFloat) {
+        UserDefaults.standard.set(Double(pageSpacing), forKey: pageSpacingKey)
+    }
+}
+
 // MARK: - Manga Reader ViewModel
 @MainActor
 public final class MangaReaderViewModel: ObservableObject {
@@ -8,7 +34,8 @@ public final class MangaReaderViewModel: ObservableObject {
     @Published public var pages: [MangaPage] = []
     @Published public var currentPageIndex: Int = 0
     @Published public var isLoading: Bool = false
-    @Published public var readingMode: ReadingMode = .webtoon
+    @Published public var readingMode: ReadingMode = MangaReaderPreferences.readingMode
+    @Published public var pageSpacing: CGFloat = MangaReaderPreferences.pageSpacing
     @Published public var showControls: Bool = true
     @Published public var errorMessage: String? = nil
 
@@ -45,6 +72,16 @@ public final class MangaReaderViewModel: ObservableObject {
         withAnimation(.easeInOut(duration: 0.22)) {
             showControls.toggle()
         }
+    }
+
+    public func setReadingMode(_ mode: ReadingMode) {
+        readingMode = mode
+        MangaReaderPreferences.save(readingMode: mode)
+    }
+
+    public func setPageSpacing(_ spacing: CGFloat) {
+        pageSpacing = spacing
+        MangaReaderPreferences.save(pageSpacing: spacing)
     }
 
     public func saveProgress() {
@@ -199,7 +236,7 @@ public struct MangaReaderView: View {
                         // Cuộn dọc liên tục (Webtoon)
                         ScrollViewReader { proxy in
                             ScrollView(.vertical, showsIndicators: false) {
-                                LazyVStack(spacing: 2) {
+                                LazyVStack(spacing: viewModel.pageSpacing) {
                                     ForEach(viewModel.pages) { page in
                                         MangaPageView(page: page)
                                             .id(page.index)
@@ -276,8 +313,24 @@ public struct MangaReaderView: View {
             // Mode Selector
             Menu {
                 ForEach(ReadingMode.allCases) { mode in
-                    Button(action: { viewModel.readingMode = mode }) {
+                    Button(action: { viewModel.setReadingMode(mode) }) {
                         Label(mode.rawValue, systemImage: mode.iconName)
+                    }
+                }
+                if viewModel.readingMode == .webtoon {
+                    Divider()
+                    Section("Khoảng cách trang") {
+                        ForEach([CGFloat(0), 2, 6, 12], id: \.self) { spacing in
+                            Button {
+                                viewModel.setPageSpacing(spacing)
+                            } label: {
+                                if viewModel.pageSpacing == spacing {
+                                    Label("\(Int(spacing)) pt", systemImage: "checkmark")
+                                } else {
+                                    Text("\(Int(spacing)) pt")
+                                }
+                            }
+                        }
                     }
                 }
             } label: {
