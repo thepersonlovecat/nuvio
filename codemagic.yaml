@@ -38,13 +38,18 @@ workflows:
           cp -r Configuration ../iosApp/
 
           echo "Cấu hình tài khoản Nuvio (Supabase Backend) vào local.properties..."
-          cat << 'EOF' > ../local.properties
-NUVIO_SUPABASE_URL=https://api.nuvio.tv
-NUVIO_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzgxNTIxMzQ2LCJleHAiOjE5MzkyMDEzNDZ9.tmQaj682pwzehpqlgCDMnySOqiUvpgRbrE43T4VJpDI
-NUVIO_SUPABASE_FALLBACK_URL=https://api.nuvio.tv
-SUPPORTERS_WALL_URL=https://nuvio.tv/api/supporters/wall
-EOF
-          cp ../local.properties local.properties
+          python3 << 'EOF'
+          lines = [
+              "NUVIO_SUPABASE_URL=https://api.nuvio.tv",
+              "NUVIO_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzgxNTIxMzQ2LCJleHAiOjE5MzkyMDEzNDZ9.tmQaj682pwzehpqlgCDMnySOqiUvpgRbrE43T4VJpDI",
+              "NUVIO_SUPABASE_FALLBACK_URL=https://api.nuvio.tv",
+              "SUPPORTERS_WALL_URL=https://nuvio.tv/api/supporters/wall",
+          ]
+          with open("../local.properties", "w", encoding="utf-8") as f:
+              f.write("\n".join(lines) + "\n")
+          with open("local.properties", "w", encoding="utf-8") as f:
+              f.write("\n".join(lines) + "\n")
+          EOF
           export NUVIO_SUPABASE_URL="https://api.nuvio.tv"
           export NUVIO_SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzgxNTIxMzQ2LCJleHAiOjE5MzkyMDEzNDZ9.tmQaj682pwzehpqlgCDMnySOqiUvpgRbrE43T4VJpDI"
           export NUVIO_SUPABASE_FALLBACK_URL="https://api.nuvio.tv"
