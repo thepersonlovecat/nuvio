@@ -42,25 +42,32 @@ workflows:
           touch ../local.properties
           touch local.properties
 
-          echo "Vô hiệu hóa pha DevirtualizationAnalysis và LTO gây OOM trong Kotlin/Native..."
+          echo "Vô hiệu hóa các pha tối ưu Kotlin/Native gây OOM khi link Release..."
           python3 << 'EOF'
           path = '../composeApp/build.gradle.kts'
           with open(path, 'r', encoding='utf-8') as f:
               content = f.read()
 
           target = 'freeCompilerArgs += listOf("-Xbinary=bundleId=$iosFrameworkBundleId")'
-          replacement = 'freeCompilerArgs += listOf("-Xbinary=bundleId=$iosFrameworkBundleId", "-Xdisable-phases=DevirtualizationAnalysis")'
+          replacement = '''freeCompilerArgs += listOf(
+                "-Xbinary=bundleId=$iosFrameworkBundleId",
+                // Whole-program optimizations can exceed the memory available to the CI linker.
+                "-Xdisable-phases=DevirtualizationAnalysis",
+                "-Xdisable-phases=EscapeAnalysis",
+                "-Xdisable-phases=RemoveRedundantCallsToStaticInitializersPhase",
+                "-Xadd-light-debug=disable",
+            )'''
 
           if target in content:
               content = content.replace(target, replacement)
               with open(path, 'w', encoding='utf-8') as f:
                   f.write(content)
-              print("==> Đã vá thành công composeApp/build.gradle.kts (-Xdisable-phases=DevirtualizationAnalysis)")
+              print("==> Đã vá thành công các pha Kotlin/Native gây OOM")
           else:
               print("==> CẢNH BÁO: Không tìm thấy target trong composeApp/build.gradle.kts!")
           EOF
 
-          echo "Cấu hình triệt để 6GB RAM và tắt LTO cho Gradle & Kotlin/Native..."
+          echo "Cấu hình 6GB RAM cho Gradle và tiến trình Kotlin/Native..."
           python3 << 'EOF'
           path = '../gradle.properties'
           with open(path, 'r', encoding='utf-8') as f:
@@ -71,15 +78,13 @@ workflows:
               'kotlin.daemon.jvmargs',
               'kotlin.native.jvmargs',
               'kotlin.native.jvmArgs',
-              'kotlin.native.binary.lto',
               'kotlin.native.cacheKind'
           ])]
 
           filtered.append('org.gradle.jvmargs=-Xmx6144m -XX:+UseG1GC -XX:MaxMetaspaceSize=1024m')
           filtered.append('kotlin.daemon.jvmargs=-Xmx6144m')
-          filtered.append('kotlin.native.jvmargs=-Xmx6144m')
-          filtered.append('kotlin.native.binary.lto=none')
-          filtered.append('kotlin.native.cacheKind=none')
+          # Kotlin/Native linking runs in a separate JVM; this exact camel-case key configures it.
+          filtered.append('kotlin.native.jvmArgs=-Xmx6144m -XX:+UseG1GC -XX:MaxMetaspaceSize=1024m')
 
           with open(path, 'w', encoding='utf-8') as f:
               f.write('\n'.join(filtered) + '\n')
