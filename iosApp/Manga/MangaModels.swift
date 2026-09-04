@@ -79,12 +79,14 @@ public struct MangaChapter: Identifiable, Codable, Hashable {
 public struct MangaReadingSession: Identifiable {
     public let manga: MangaItem
     public let chapter: MangaChapter
+    public let initialPageIndex: Int
 
     public var id: String { "\(manga.id)::\(chapter.id)" }
 
-    public init(manga: MangaItem, chapter: MangaChapter) {
+    public init(manga: MangaItem, chapter: MangaChapter, initialPageIndex: Int = 0) {
         self.manga = manga
         self.chapter = chapter
+        self.initialPageIndex = max(0, initialPageIndex)
     }
 }
 
@@ -195,4 +197,3 @@ public struct MangaAddonManifest: Codable {
         )
     }
 }
-

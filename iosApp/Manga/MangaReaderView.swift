@@ -13,18 +13,21 @@ public final class MangaReaderViewModel: ObservableObject {
     @Published public var errorMessage: String? = nil
 
     private let bridge = ProviderZBridge.shared
+    private let initialPageIndex: Int
 
-    public init(manga: MangaItem, initialChapter: MangaChapter) {
+    public init(manga: MangaItem, initialChapter: MangaChapter, initialPageIndex: Int = 0) {
         self.manga = manga
         self.currentChapter = initialChapter
+        self.initialPageIndex = max(0, initialPageIndex)
         loadPages(for: initialChapter)
     }
 
     public func loadPages(for chapter: MangaChapter) {
+        let shouldRestoreInitialPage = chapter.id == currentChapter.id && pages.isEmpty
         self.currentChapter = chapter
         self.isLoading = true
         self.errorMessage = nil
-        self.currentPageIndex = 0
+        self.currentPageIndex = shouldRestoreInitialPage ? initialPageIndex : 0
 
         Task {
             let loadedPages = await bridge.fetchPages(chapterUrl: chapter.url)
@@ -32,6 +35,7 @@ public final class MangaReaderViewModel: ObservableObject {
                 self.errorMessage = "Không tìm thấy trang truyện của chương này."
             } else {
                 self.pages = loadedPages
+                self.currentPageIndex = min(self.currentPageIndex, loadedPages.count - 1)
             }
             self.isLoading = false
         }
@@ -41,6 +45,16 @@ public final class MangaReaderViewModel: ObservableObject {
         withAnimation(.easeInOut(duration: 0.22)) {
             showControls.toggle()
         }
+    }
+
+    public func saveProgress() {
+        guard !pages.isEmpty else { return }
+        MangaReadingProgressStore.shared.save(
+            manga: manga,
+            chapter: currentChapter,
+            pageIndex: currentPageIndex,
+            pageCount: pages.count
+        )
     }
 
     public var hasPreviousChapter: Bool {
@@ -226,6 +240,15 @@ public struct MangaReaderView: View {
         }
         .preferredColorScheme(.dark)
         .statusBarHidden(!viewModel.showControls)
+        .onChange(of: viewModel.currentPageIndex) { _ in
+            viewModel.saveProgress()
+        }
+        .onChange(of: viewModel.currentChapter.id) { _ in
+            viewModel.saveProgress()
+        }
+        .onDisappear {
+            viewModel.saveProgress()
+        }
     }
 
     // ── Top HUD ──

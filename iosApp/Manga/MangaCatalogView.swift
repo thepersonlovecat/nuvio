@@ -55,6 +55,14 @@ public final class MangaCatalogViewModel: ObservableObject {
             self?.activeReadingSession = session
         }
     }
+
+    public func resume(_ progress: MangaReadingProgress) {
+        activeReadingSession = MangaReadingSession(
+            manga: progress.resumeManga,
+            chapter: progress.chapter,
+            initialPageIndex: progress.pageIndex
+        )
+    }
 }
 
 // MARK: - Manga Poster Card
@@ -97,6 +105,52 @@ struct MangaPosterCard: View {
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
         }
+    }
+}
+
+struct MangaContinueReadingCard: View {
+    let progress: MangaReadingProgress
+
+    var body: some View {
+        HStack(spacing: 12) {
+            AsyncImage(url: URL(string: progress.mangaCover)) { phase in
+                if let image = phase.image {
+                    image.resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    Color.white.opacity(0.1)
+                }
+            }
+            .frame(width: 54, height: 76)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Đọc tiếp")
+                    .font(.caption.weight(.bold))
+                    .foregroundColor(.purple)
+                Text(progress.mangaTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                Text(progress.chapter.title)
+                    .font(.caption)
+                    .foregroundColor(.gray)
+                    .lineLimit(1)
+                ProgressView(value: Double(progress.completedPageCount), total: Double(max(progress.pageCount, 1)))
+                    .tint(.purple)
+                Text("Trang \(progress.completedPageCount) / \(max(progress.pageCount, 1))")
+                    .font(.caption2)
+                    .foregroundColor(.gray)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "play.fill")
+                .foregroundColor(.white)
+                .padding(10)
+                .background(Color.purple)
+                .clipShape(Circle())
+        }
+        .padding(10)
+        .background(Color.white.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 
@@ -271,6 +325,7 @@ struct MangaDetailSheet: View {
 public struct MangaCatalogView: View {
     @StateObject private var viewModel = MangaCatalogViewModel()
     @ObservedObject private var addonManager = MangaAddonManager.shared
+    @ObservedObject private var readingProgress = MangaReadingProgressStore.shared
 
     private let columns = [
         GridItem(.flexible(), spacing: 14),
@@ -286,6 +341,16 @@ public struct MangaCatalogView: View {
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
+                        if let progress = readingProgress.latest {
+                            Button {
+                                viewModel.resume(progress)
+                            } label: {
+                                MangaContinueReadingCard(progress: progress)
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 16)
+                        }
+
                         // Thanh tìm kiếm
                         HStack {
                             Image(systemName: "magnifyingglass")
@@ -438,7 +503,8 @@ public struct MangaCatalogView: View {
                 MangaReaderView(
                     viewModel: MangaReaderViewModel(
                         manga: session.manga,
-                        initialChapter: session.chapter
+                        initialChapter: session.chapter,
+                        initialPageIndex: session.initialPageIndex
                     )
                 )
             }
