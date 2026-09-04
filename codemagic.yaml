@@ -25,7 +25,11 @@ workflows:
             cp -r /tmp/NuvioMobile/build.gradle.kts ../
             cp -r /tmp/NuvioMobile/settings.gradle.kts ../
             cp -r /tmp/NuvioMobile/composeApp ../
+            cp -r /tmp/NuvioMobile/androidApp ../
             chmod +x ../gradlew
+
+            # Tối ưu: Loại bỏ include(":androidApp") để Gradle chỉ tập trung biên dịch iOS framework, tránh lỗi thiếu thư mục Android
+            python3 -c "p='../settings.gradle.kts'; c=open(p).read(); open(p,'w').write(c.replace('include(\":androidApp\")','// include(\":androidApp\")'))"
           fi
 
           echo "=== 3. Kiểm tra môi trường thư mục cha ==="
