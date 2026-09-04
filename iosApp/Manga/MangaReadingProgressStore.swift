@@ -52,6 +52,10 @@ public final class MangaReadingProgressStore: ObservableObject {
         entries.values.max { $0.updatedAt < $1.updatedAt }
     }
 
+    public var recent: [MangaReadingProgress] {
+        entries.values.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
     private init() {
         guard let data = UserDefaults.standard.data(forKey: storageKey),
               let stored = try? JSONDecoder().decode([String: MangaReadingProgress].self, from: data) else {

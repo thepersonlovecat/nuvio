@@ -203,6 +203,35 @@ struct MangaFollowedCard: View {
     }
 }
 
+struct MangaReadingHistoryCard: View {
+    let progress: MangaReadingProgress
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            AsyncImage(url: URL(string: progress.mangaCover)) { phase in
+                if let image = phase.image {
+                    image.resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    Color.white.opacity(0.1)
+                }
+            }
+            .frame(width: 100, height: 140)
+            .clipShape(RoundedRectangle(cornerRadius: 9))
+
+            Text(progress.mangaTitle)
+                .font(.caption.weight(.semibold))
+                .foregroundColor(.white)
+                .lineLimit(1)
+                .frame(width: 100, alignment: .leading)
+            Text("\(progress.chapter.title) · tr. \(progress.completedPageCount)")
+                .font(.caption2)
+                .foregroundColor(.gray)
+                .lineLimit(1)
+                .frame(width: 100, alignment: .leading)
+        }
+    }
+}
+
 // MARK: - Manga Detail Sheet
 struct MangaDetailSheet: View {
     let manga: MangaItem
@@ -424,6 +453,36 @@ public struct MangaCatalogView: View {
                             }
                             .buttonStyle(.plain)
                             .padding(.horizontal, 16)
+                        }
+
+                        if readingProgress.recent.count > 1 {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("Lịch sử đọc")
+                                    .font(.title3.bold())
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 16)
+
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 12) {
+                                        ForEach(Array(readingProgress.recent.dropFirst().prefix(20))) { progress in
+                                            Button {
+                                                viewModel.resume(progress)
+                                            } label: {
+                                                MangaReadingHistoryCard(progress: progress)
+                                            }
+                                            .buttonStyle(.plain)
+                                            .contextMenu {
+                                                Button(role: .destructive) {
+                                                    readingProgress.remove(mangaID: progress.mangaID)
+                                                } label: {
+                                                    Label("Xóa khỏi lịch sử", systemImage: "trash")
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .padding(.horizontal, 16)
+                                }
+                            }
                         }
 
                         if !libraryStore.followed.isEmpty {
