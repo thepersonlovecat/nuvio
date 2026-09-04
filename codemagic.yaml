@@ -38,6 +38,10 @@ workflows:
           mkdir -p ../iosApp
           cp -r Configuration ../iosApp/
 
+          echo "Tạo local.properties cho Gradle GenerateRuntimeConfigsTask..."
+          touch ../local.properties
+          touch local.properties
+
           echo "=== 3. Kiểm tra môi trường thư mục cha ==="
           ls -la ../
           ls -la ../iosApp/Configuration
