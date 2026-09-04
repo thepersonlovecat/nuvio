@@ -10,77 +10,37 @@ public final class MangaAddonManager: ObservableObject {
     private let activeKey = "nuvio_active_manga_addon_id_v1"
 
     @Published public var addons: [MangaAddon] = []
-    @Published public var activeAddonId: String = "otruyen"
+    @Published public var activeAddonId: String = ""
 
-    public var activeAddon: MangaAddon {
+    /// Nguồn đang kích hoạt. Nil nếu người dùng chưa cài add-on nào -
+    /// giao diện sẽ hiện hướng dẫn cài đặt thay vì dùng nguồn chèn cứng.
+    public var activeAddon: MangaAddon? {
         addons.first(where: { $0.id == activeAddonId && $0.isEnabled })
             ?? addons.first(where: { $0.isEnabled })
-            ?? defaultAddons[0]
     }
 
     private init() {
         loadAddons()
     }
 
-    // MARK: - Add-ons Mặc Định (Built-in)
-    public var defaultAddons: [MangaAddon] {
-        [
-            MangaAddon(
-                id: "otruyen",
-                name: "Ổ Truyện (OTruyen)",
-                version: "1.2.0",
-                description: "Kho truyện tranh tiếng Việt đồ sộ, cập nhật chương mới mỗi ngày.",
-                baseUrl: "https://otruyenapi.com",
-                type: .builtInRest,
-                isEnabled: true,
-                isBuiltIn: true
-            ),
-            MangaAddon(
-                id: "cuutruyen",
-                name: "Cửu Truyện",
-                version: "1.0.0",
-                description: "Nguồn truyện dịch bản quyền và nhóm dịch chất lượng cao.",
-                baseUrl: "https://cuutruyen.net/api/v2",
-                type: .builtInRest,
-                isEnabled: true,
-                isBuiltIn: true
-            ),
-            MangaAddon(
-                id: "mangadex",
-                name: "MangaDex (Việt & Quốc Tế)",
-                version: "1.0.0",
-                description: "Nền tảng manga mở toàn cầu, hỗ trợ tiếng Việt và đa ngôn ngữ.",
-                baseUrl: "https://api.mangadex.org",
-                type: .builtInRest,
-                isEnabled: true,
-                isBuiltIn: true
-            )
-        ]
-    }
-
     // MARK: - Nạp & Lưu Trữ Độc Lập
     private func loadAddons() {
         if let data = UserDefaults.standard.data(forKey: addonsKey),
-           let saved = try? JSONDecoder().decode([MangaAddon].self, from: data),
-           !saved.isEmpty {
-            // Đảm bảo các nguồn built-in luôn tồn tại
-            var merged = saved
-            for builtin in defaultAddons {
-                if !merged.contains(where: { $0.id == builtin.id }) {
-                    merged.append(builtin)
-                }
+           let saved = try? JSONDecoder().decode([MangaAddon].self, from: data) {
+            // Migration: loại bỏ các nguồn built-in cũ từng được chèn cứng,
+            // chỉ giữ lại add-on do người dùng tự cài.
+            let userAddons = saved.filter { !$0.isBuiltIn }
+            self.addons = userAddons
+            if userAddons.count != saved.count {
+                saveAddons()
             }
-            self.addons = merged
-        } else {
-            self.addons = defaultAddons
-            saveAddons()
         }
 
         if let savedActive = UserDefaults.standard.string(forKey: activeKey),
            addons.contains(where: { $0.id == savedActive && $0.isEnabled }) {
             self.activeAddonId = savedActive
         } else {
-            self.activeAddonId = "otruyen"
+            self.activeAddonId = addons.first(where: { $0.isEnabled })?.id ?? ""
         }
     }
 
@@ -112,11 +72,10 @@ public final class MangaAddonManager: ObservableObject {
     }
 
     public func removeAddon(id: String) {
-        // Không cho phép xóa các nguồn built-in cốt lõi
-        guard let idx = addons.firstIndex(where: { $0.id == id && !$0.isBuiltIn }) else { return }
+        guard let idx = addons.firstIndex(where: { $0.id == id }) else { return }
         addons.remove(at: idx)
         if activeAddonId == id {
-            activeAddonId = addons.first(where: { $0.isEnabled })?.id ?? "otruyen"
+            activeAddonId = addons.first(where: { $0.isEnabled })?.id ?? ""
         }
         saveAddons()
     }
@@ -152,6 +111,17 @@ public final class MangaAddonManager: ObservableObject {
             let desc = json["description"] as? String ?? "Custom Provider-Z Extension"
             let baseUrl = json["baseUrl"] as? String ?? json["url"] as? String ?? trimmed
             let icon = json["icon"] as? String ?? json["iconUrl"] as? String
+            let headers = json["headers"] as? [String: String]
+
+            var endpoints: MangaAddonEndpoints?
+            if let rawEndpoints = json["endpoints"] as? [String: String] {
+                endpoints = MangaAddonEndpoints(
+                    home: rawEndpoints["home"],
+                    search: rawEndpoints["search"],
+                    detail: rawEndpoints["detail"],
+                    chapter: rawEndpoints["chapter"]
+                )
+            }
 
             let newAddon = MangaAddon(
                 id: id,
@@ -163,7 +133,9 @@ public final class MangaAddonManager: ObservableObject {
                 manifestUrl: trimmed,
                 type: .providerZJson,
                 isEnabled: true,
-                isBuiltIn: false
+                isBuiltIn: false,
+                endpoints: endpoints,
+                headers: headers
             )
             await appendAndSave(newAddon)
             return newAddon

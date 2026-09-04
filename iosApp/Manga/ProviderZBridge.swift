@@ -9,6 +9,7 @@ public enum MangaSourceError: LocalizedError, Equatable {
     case invalidResponse(sourceName: String)
     case emptyData(sourceName: String)
     case invalidUrl(urlString: String)
+    case noAddonInstalled
     case custom(message: String)
 
     public var errorDescription: String? {
@@ -25,6 +26,8 @@ public enum MangaSourceError: LocalizedError, Equatable {
             return "Không tìm thấy dữ liệu truyện nào từ nguồn \"\(source)\"."
         case .invalidUrl(let url):
             return "Địa chỉ URL nguồn không hợp lệ: \(url)"
+        case .noAddonInstalled:
+            return "Bạn chưa cài đặt nguồn truyện (Add-on) nào."
         case .custom(let message):
             return message
         }
@@ -35,9 +38,11 @@ public enum MangaSourceError: LocalizedError, Equatable {
         case .noInternet:
             return "Hãy kiểm tra lại kết nối mạng của bạn và bấm Thử lại."
         case .timeout, .serverError, .invalidResponse:
-            return "Bạn có thể bấm Thử lại hoặc chọn chuyển sang nguồn truyện khác (OTruyen, MangaDex...)."
+            return "Bạn có thể bấm Thử lại hoặc chọn chuyển sang nguồn truyện khác."
         case .emptyData:
             return "Hãy thử tìm kiếm với từ khóa khác hoặc đổi nguồn truyện."
+        case .noAddonInstalled:
+            return "Bấm \"Quản lý Add-on\" và dán link manifest.json của nguồn truyện để cài đặt."
         case .invalidUrl, .custom:
             return "Vui lòng kiểm tra lại cấu hình Add-on hoặc đổi nguồn."
         }
@@ -49,15 +54,75 @@ public struct MangaCatalogLoadResult {
     public let items: [MangaItem]
     public let error: MangaSourceError?
     public let isFallback: Bool
+    /// Nguồn có còn trang dữ liệu tiếp theo để tải thêm (infinite scroll) hay không.
+    public let hasMorePages: Bool
 
-    public init(items: [MangaItem], error: MangaSourceError? = nil, isFallback: Bool = false) {
+    public init(items: [MangaItem], error: MangaSourceError? = nil, isFallback: Bool = false, hasMorePages: Bool = false) {
         self.items = items
         self.error = error
         self.isFallback = isFallback
+        self.hasMorePages = hasMorePages
     }
 }
 
-/// Bridge kết nối và trích xuất dữ liệu truyện tranh từ Manga Add-ons / Provider-Z / REST API
+/// DTO "mềm" cho chi tiết truyện: mọi trường đều optional,
+/// trường nào thiếu sẽ giữ nguyên dữ liệu gốc đã có của item.
+private struct MangaDetailPayload: Decodable {
+    let id: String?
+    let title: String?
+    let cover: String?
+    let posterUrl: String?
+    let url: String?
+    let description: String?
+    let status: String?
+    let genres: [String]?
+    let authors: [String]?
+    let chapters: [MangaChapter]?
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, cover, url, description, status, genres, authors, chapters
+        case posterUrl = "posterUrl"
+        case posterUrlSnake = "poster_url"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id)
+        title = try c.decodeIfPresent(String.self, forKey: .title)
+        cover = try c.decodeIfPresent(String.self, forKey: .cover)
+        posterUrl = try c.decodeIfPresent(String.self, forKey: .posterUrl)
+            ?? c.decodeIfPresent(String.self, forKey: .posterUrlSnake)
+        url = try c.decodeIfPresent(String.self, forKey: .url)
+        description = try c.decodeIfPresent(String.self, forKey: .description)
+        status = try c.decodeIfPresent(String.self, forKey: .status)
+        genres = try c.decodeIfPresent([String].self, forKey: .genres)
+        authors = try c.decodeIfPresent([String].self, forKey: .authors)
+        chapters = try c.decodeIfPresent([MangaChapter].self, forKey: .chapters)
+    }
+
+    func merged(into item: MangaItem) -> MangaItem {
+        MangaItem(
+            id: id ?? item.id,
+            title: title ?? item.title,
+            cover: cover ?? item.cover,
+            posterUrl: posterUrl ?? item.posterUrl,
+            url: url ?? item.url,
+            description: description ?? item.description,
+            status: status ?? item.status,
+            genres: genres ?? item.genres,
+            authors: authors ?? item.authors,
+            chapters: chapters ?? item.chapters
+        )
+    }
+}
+
+/// Bridge kết nối dữ liệu truyện tranh từ Manga Add-on do người dùng cài đặt.
+///
+/// Hoàn toàn generic - không chèn cứng bất kỳ nguồn nào. Mọi hành vi được
+/// điều khiển bởi file manifest.json của Add-on (xem MANGA_ADDON_GUIDE.md):
+/// - `baseUrl`: endpoint mặc định cho danh sách trang chủ.
+/// - `endpoints.home/search/detail/chapter`: mẫu URL với biến {query}, {id}, {page}.
+/// - `headers`: header HTTP (ví dụ Referer) gửi kèm mọi request của nguồn.
 public final class ProviderZBridge: @unchecked Sendable {
     public static let shared = ProviderZBridge()
 
@@ -71,224 +136,146 @@ public final class ProviderZBridge: @unchecked Sendable {
     }
 
     // MARK: - 1. Nạp danh sách truyện trang chủ theo Add-on
-    public func fetchHomeManga(addon: MangaAddon? = nil) async -> MangaCatalogLoadResult {
-        let currentAddon = addon ?? MangaAddonManager.shared.activeAddon
+    public func fetchHomeManga(addon: MangaAddon? = nil, page: Int = 1) async -> MangaCatalogLoadResult {
+        guard let currentAddon = addon ?? MangaAddonManager.shared.activeAddon else {
+            return MangaCatalogLoadResult(items: [], error: .noAddonInstalled)
+        }
 
-        switch currentAddon.id {
-        case "otruyen":
-            let homeUrl = "\(currentAddon.baseUrl)/v1/api/danh-sach/truyen-moi?page=1"
-            let res = await fetchOtruyenList(from: homeUrl, sourceName: currentAddon.name)
-            switch res {
-            case .success(let items):
-                return MangaCatalogLoadResult(items: items)
-            case .failure(let err):
-                return MangaCatalogLoadResult(items: [], error: err)
-            }
+        let template = currentAddon.endpoints?.home ?? currentAddon.baseUrl
+        guard let urlString = resolveEndpoint(template, addon: currentAddon, values: ["page": "\(max(1, page))"]),
+              let url = URL(string: urlString) else {
+            return MangaCatalogLoadResult(items: [], error: .invalidUrl(urlString: template))
+        }
 
-        case "cuutruyen":
-            let res = await fetchCuutruyenRecent(baseUrl: currentAddon.baseUrl, sourceName: currentAddon.name)
-            switch res {
-            case .success(let items):
-                return MangaCatalogLoadResult(items: items)
-            case .failure(let err):
-                return MangaCatalogLoadResult(items: [], error: err)
-            }
-
-        case "mangadex":
-            let res = await fetchMangadexPopular(baseUrl: currentAddon.baseUrl, sourceName: currentAddon.name)
-            switch res {
-            case .success(let items):
-                return MangaCatalogLoadResult(items: items)
-            case .failure(let err):
-                return MangaCatalogLoadResult(items: [], error: err)
-            }
-
-        default:
-            // Custom Add-on / Provider-Z JSON
-            let res = await fetchCustomAddonList(addon: currentAddon)
-            switch res {
-            case .success(let items):
-                return MangaCatalogLoadResult(items: items)
-            case .failure(let err):
-                return MangaCatalogLoadResult(items: [], error: err)
-            }
+        let res = await fetchMangaList(from: url, addon: currentAddon)
+        switch res {
+        case .success(let items):
+            // Chỉ hỗ trợ tải thêm trang khi nguồn khai báo biến {page} trong manifest
+            let hasMore = (currentAddon.endpoints?.home?.contains("{page}") ?? false) && !items.isEmpty
+            return MangaCatalogLoadResult(items: items, hasMorePages: hasMore)
+        case .failure(let err):
+            return MangaCatalogLoadResult(items: [], error: err)
         }
     }
 
     // MARK: - 2. Tìm kiếm truyện theo Add-on
-    public func searchManga(query: String, addon: MangaAddon? = nil) async -> MangaCatalogLoadResult {
+    public func searchManga(query: String, addon: MangaAddon? = nil, page: Int = 1) async -> MangaCatalogLoadResult {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return await fetchHomeManga(addon: addon) }
+        guard !trimmed.isEmpty else { return await fetchHomeManga(addon: addon, page: page) }
+
+        guard let currentAddon = addon ?? MangaAddonManager.shared.activeAddon else {
+            return MangaCatalogLoadResult(items: [], error: .noAddonInstalled)
+        }
 
         guard let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
             return MangaCatalogLoadResult(items: [], error: .custom(message: "Từ khóa tìm kiếm không hợp lệ."))
         }
 
-        let currentAddon = addon ?? MangaAddonManager.shared.activeAddon
+        guard let template = currentAddon.endpoints?.search else {
+            return MangaCatalogLoadResult(
+                items: [],
+                error: .custom(message: "Nguồn \"\(currentAddon.name)\" chưa khai báo endpoint tìm kiếm (search) trong manifest.")
+            )
+        }
 
-        switch currentAddon.id {
-        case "otruyen":
-            let searchUrl = "\(currentAddon.baseUrl)/v1/api/tim-kiem?keyword=\(encoded)"
-            let res = await fetchOtruyenList(from: searchUrl, sourceName: currentAddon.name)
-            switch res {
-            case .success(let items):
-                return items.isEmpty
-                    ? MangaCatalogLoadResult(items: [], error: .emptyData(sourceName: currentAddon.name))
-                    : MangaCatalogLoadResult(items: items)
-            case .failure(let err):
-                return MangaCatalogLoadResult(items: [], error: err)
+        guard let urlString = resolveEndpoint(template, addon: currentAddon, values: ["query": encoded, "page": "\(max(1, page))"]),
+              let url = URL(string: urlString) else {
+            return MangaCatalogLoadResult(items: [], error: .invalidUrl(urlString: template))
+        }
+
+        let res = await fetchMangaList(from: url, addon: currentAddon)
+        switch res {
+        case .success(let items):
+            if items.isEmpty {
+                return page > 1
+                    ? MangaCatalogLoadResult(items: [], hasMorePages: false)
+                    : MangaCatalogLoadResult(items: [], error: .emptyData(sourceName: currentAddon.name))
             }
-
-        case "cuutruyen":
-            let res = await fetchCuutruyenSearch(keyword: encoded, baseUrl: currentAddon.baseUrl, sourceName: currentAddon.name)
-            switch res {
-            case .success(let items):
-                return items.isEmpty
-                    ? MangaCatalogLoadResult(items: [], error: .emptyData(sourceName: currentAddon.name))
-                    : MangaCatalogLoadResult(items: items)
-            case .failure(let err):
-                return MangaCatalogLoadResult(items: [], error: err)
-            }
-
-        case "mangadex":
-            let res = await fetchMangadexSearch(keyword: encoded, baseUrl: currentAddon.baseUrl, sourceName: currentAddon.name)
-            switch res {
-            case .success(let items):
-                return items.isEmpty
-                    ? MangaCatalogLoadResult(items: [], error: .emptyData(sourceName: currentAddon.name))
-                    : MangaCatalogLoadResult(items: items)
-            case .failure(let err):
-                return MangaCatalogLoadResult(items: [], error: err)
-            }
-
-        default:
-            return MangaCatalogLoadResult(items: [], error: .custom(message: "Nguồn này chưa hỗ trợ tìm kiếm trực tiếp."))
+            let hasMore = template.contains("{page}")
+            return MangaCatalogLoadResult(items: items, hasMorePages: hasMore)
+        case .failure(let err):
+            return MangaCatalogLoadResult(items: [], error: err)
         }
     }
 
     // MARK: - 3. Lấy chi tiết truyện và danh sách Chapter
+    /// Trường nào nguồn không trả về sẽ giữ nguyên dữ liệu gốc của item;
+    /// không tải được thì trả về item gốc (không bịa dữ liệu giả).
     public func fetchDetail(for item: MangaItem, addon: MangaAddon? = nil) async -> MangaItem {
-        guard let url = URL(string: item.url) else {
-            return fallbackDetail(for: item)
+        let currentAddon = addon ?? MangaAddonManager.shared.activeAddon
+
+        var urlString = item.url
+        if let addon = currentAddon,
+           let template = addon.endpoints?.detail,
+           let resolved = resolveEndpoint(template, addon: addon, values: ["id": item.id]) {
+            urlString = resolved
+        }
+
+        guard !urlString.isEmpty, let url = URL(string: urlString) else {
+            return item
         }
 
         do {
-            var request = URLRequest(url: url)
-            request.setValue("https://otruyen.cc/", forHTTPHeaderField: "Referer")
-            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", forHTTPHeaderField: "User-Agent")
-
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await session.data(for: makeRequest(url: url, addon: currentAddon))
             guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
-                return fallbackDetail(for: item)
+                return item
             }
 
-            // A. Cấu trúc OTruyen
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let dataObj = json["data"] as? [String: Any],
-               let itemObj = dataObj["item"] as? [String: Any] {
+            // A. Object chi tiết nằm trực tiếp ở root (chuẩn trong MANGA_ADDON_GUIDE)
+            if let payload = try? JSONDecoder().decode(MangaDetailPayload.self, from: data) {
+                return payload.merged(into: item)
+            }
 
-                let desc = (itemObj["content"] as? String)?
-                    .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                let status = itemObj["status"] as? String
-
-                var chaptersList: [MangaChapter] = []
-                if let serverList = itemObj["chapters"] as? [[String: Any]],
-                   let firstServer = serverList.first,
-                   let serverData = firstServer["server_data"] as? [[String: Any]] {
-                    for ch in serverData {
-                        let cName = ch["chapter_name"] as? String ?? ""
-                        let cTitle = ch["chapter_title"] as? String ?? ""
-                        let displayTitle = cTitle.isEmpty ? "Chapter \(cName)" : "Chap \(cName): \(cTitle)"
-                        let apiData = ch["chapter_api_data"] as? String ?? ""
-
-                        chaptersList.append(
-                            MangaChapter(
-                                id: cName,
-                                title: displayTitle,
-                                chapterName: cName,
-                                url: apiData,
-                                date: nil
-                            )
-                        )
+            // B. Object chi tiết nằm trong wrapper {"data": {...}} hoặc {"item": {...}}
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                for wrapperKey in ["data", "item"] {
+                    if let nested = json[wrapperKey],
+                       JSONSerialization.isValidJSONObject(nested),
+                       let nestedData = try? JSONSerialization.data(withJSONObject: nested),
+                       let payload = try? JSONDecoder().decode(MangaDetailPayload.self, from: nestedData) {
+                        return payload.merged(into: item)
                     }
-                }
-
-                return MangaItem(
-                    id: item.id,
-                    title: item.title,
-                    cover: item.cover,
-                    posterUrl: item.posterUrl,
-                    url: item.url,
-                    description: desc ?? item.description,
-                    status: status ?? item.status,
-                    genres: item.genres,
-                    authors: item.authors,
-                    chapters: chaptersList.isEmpty ? fallbackChapters(for: item.id) : chaptersList
-                )
-            }
-
-            // B. Cấu trúc MangaDex / Provider-Z
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let dataArr = json["data"] as? [[String: Any]] {
-                var chaptersList: [MangaChapter] = []
-                for ch in dataArr {
-                    let chId = ch["id"] as? String ?? ""
-                    let attr = ch["attributes"] as? [String: Any] ?? [:]
-                    let chNum = attr["chapter"] as? String ?? ""
-                    let chTitle = attr["title"] as? String ?? ""
-                    let display = chNum.isEmpty ? "Chapter" : "Chương \(chNum)" + (chTitle.isEmpty ? "" : " - \(chTitle)")
-                    chaptersList.append(
-                        MangaChapter(
-                            id: chId,
-                            title: display,
-                            chapterName: chNum,
-                            url: "https://api.mangadex.org/at-home/server/\(chId)",
-                            date: nil
-                        )
-                    )
-                }
-                if !chaptersList.isEmpty {
-                    return MangaItem(
-                        id: item.id,
-                        title: item.title,
-                        cover: item.cover,
-                        posterUrl: item.posterUrl,
-                        url: item.url,
-                        description: item.description,
-                        status: item.status,
-                        genres: item.genres,
-                        authors: item.authors,
-                        chapters: chaptersList
-                    )
                 }
             }
         } catch {
-            // Chuyển sang fallback detail
+            // Lỗi mạng: giữ nguyên dữ liệu gốc
         }
 
-        return fallbackDetail(for: item)
+        return item
     }
 
     // MARK: - 4. Lấy danh sách ảnh của 1 Chapter (getPages)
+    /// Trả về mảng rỗng khi lỗi để Reader hiển thị màn hình lỗi rõ ràng kèm nút Thử lại,
+    /// tuyệt đối không trả về dữ liệu giả.
     public func fetchPages(chapterUrl: String, addon: MangaAddon? = nil) async -> [MangaPage] {
+        let currentAddon = addon ?? MangaAddonManager.shared.activeAddon
         guard !chapterUrl.isEmpty, let url = URL(string: chapterUrl) else {
-            return generateMockPages(count: 12)
+            return []
         }
 
         do {
-            var request = URLRequest(url: url)
-            request.setValue("https://otruyen.cc/", forHTTPHeaderField: "Referer")
-            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", forHTTPHeaderField: "User-Agent")
-
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await session.data(for: makeRequest(url: url, addon: currentAddon))
             guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
-                return generateMockPages(count: 12)
+                return []
             }
 
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                // A. OTruyen format
-                if let dataObj = json["data"] as? [String: Any],
+            if let json = try? JSONSerialization.jsonObject(with: data) {
+                // A. {"pages": [...]} - mảng chuỗi URL hoặc object {url, headers}
+                if let dict = json as? [String: Any], let pages = dict["pages"] {
+                    let parsed = parsePageArray(pages, fallbackHeaders: currentAddon?.headers)
+                    if !parsed.isEmpty { return parsed }
+                }
+
+                // B. Mảng URL nằm trực tiếp ở root: ["https://.../01.jpg", ...]
+                if let array = json as? [Any] {
+                    let parsed = parsePageArray(array, fallbackHeaders: currentAddon?.headers)
+                    if !parsed.isEmpty { return parsed }
+                }
+
+                // C. Cấu trúc CDN trong guide:
+                // {"data": {"domain_cdn": "...", "item": {"chapter_path": "...", "chapter_image": [{"image_file": "..."}]}}}
+                if let dict = json as? [String: Any],
+                   let dataObj = dict["data"] as? [String: Any],
                    let itemObj = dataObj["item"] as? [String: Any],
                    let domainCdn = dataObj["domain_cdn"] as? String,
                    let chapterPath = itemObj["chapter_path"] as? String,
@@ -297,40 +284,23 @@ public final class ProviderZBridge: @unchecked Sendable {
                     var pages: [MangaPage] = []
                     for (idx, imgObj) in images.enumerated() {
                         if let file = imgObj["image_file"] as? String {
-                            let fullImageUrl = "\(domainCdn)/\(chapterPath)/\(file)"
                             pages.append(
                                 MangaPage(
                                     index: idx,
-                                    url: fullImageUrl,
-                                    headers: ["Referer": "https://otruyen.cc/"]
+                                    url: "\(domainCdn)/\(chapterPath)/\(file)",
+                                    headers: currentAddon?.headers
                                 )
                             )
                         }
-                    }
-
-                    if !pages.isEmpty { return pages }
-                }
-
-                // B. MangaDex format
-                if let baseUrl = json["baseUrl"] as? String,
-                   let chapterObj = json["chapter"] as? [String: Any],
-                   let hash = chapterObj["hash"] as? String,
-                   let dataImages = chapterObj["data"] as? [String] {
-                    var pages: [MangaPage] = []
-                    for (idx, filename) in dataImages.enumerated() {
-                        let fullUrl = "\(baseUrl)/data/\(hash)/\(filename)"
-                        pages.append(
-                            MangaPage(index: idx, url: fullUrl, headers: ["Referer": "https://mangadex.org/"])
-                        )
                     }
                     if !pages.isEmpty { return pages }
                 }
             }
         } catch {
-            // Fallback
+            // Lỗi mạng/parse: trả về rỗng để Reader báo lỗi và cho phép thử lại
         }
 
-        return generateMockPages(count: 12)
+        return []
     }
 
     // MARK: - 5. JavaScriptCore Runner (Hỗ trợ chạy trực tiếp provider .js)
@@ -351,6 +321,82 @@ public final class ProviderZBridge: @unchecked Sendable {
         return result?.toDictionary() as? [String: Any]
     }
 
+    // MARK: - Helpers
+
+    /// Tạo request chuẩn cho một nguồn: User-Agent di động + headers riêng của nguồn (nếu có).
+    private func makeRequest(url: URL, addon: MangaAddon?) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", forHTTPHeaderField: "User-Agent")
+        addon?.headers?.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        return request
+    }
+
+    /// Ghép mẫu endpoint với baseUrl và thay các biến {query}, {id}, {page}.
+    /// Đường dẫn bắt đầu bằng "/" được ghép sau baseUrl; URL đầy đủ giữ nguyên.
+    private func resolveEndpoint(_ template: String, addon: MangaAddon, values: [String: String]) -> String? {
+        var resolved = template.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !resolved.isEmpty else { return nil }
+        for (key, value) in values {
+            resolved = resolved.replacingOccurrences(of: "{\(key)}", with: value)
+        }
+        if resolved.hasPrefix("/") {
+            let base = addon.baseUrl.hasSuffix("/") ? String(addon.baseUrl.dropLast()) : addon.baseUrl
+            return base + resolved
+        }
+        return resolved
+    }
+
+    /// Parse danh sách trang ảnh từ mảng JSON: chấp nhận chuỗi URL thuần
+    /// hoặc object {"url": "...", "headers": {...}}. Trang không khai báo headers
+    /// sẽ kế thừa headers của nguồn (phục vụ CDN chống hotlink).
+    private func parsePageArray(_ raw: Any, fallbackHeaders: [String: String]?) -> [MangaPage] {
+        guard let array = raw as? [Any] else { return [] }
+        var pages: [MangaPage] = []
+        for (idx, element) in array.enumerated() {
+            if let urlString = element as? String, !urlString.isEmpty {
+                pages.append(MangaPage(index: idx, url: urlString, headers: fallbackHeaders))
+            } else if let dict = element as? [String: Any],
+                      let urlString = dict["url"] as? String, !urlString.isEmpty {
+                let headers = (dict["headers"] as? [String: String]) ?? fallbackHeaders
+                pages.append(MangaPage(index: idx, url: urlString, headers: headers))
+            }
+        }
+        return pages
+    }
+
+    /// Tải và decode danh sách truyện. Chấp nhận các dạng JSON phổ biến:
+    /// mảng [MangaItem] trực tiếp, hoặc wrapper {"data": [...]}, {"items": [...]}, {"results": [...]}.
+    private func fetchMangaList(from url: URL, addon: MangaAddon) async -> Result<[MangaItem], MangaSourceError> {
+        do {
+            let (data, response) = try await session.data(for: makeRequest(url: url, addon: addon))
+            guard let httpResponse = response as? HTTPURLResponse else {
+                return .failure(.invalidResponse(sourceName: addon.name))
+            }
+            guard (200...299).contains(httpResponse.statusCode) else {
+                return .failure(.serverError(statusCode: httpResponse.statusCode, sourceName: addon.name))
+            }
+
+            if let items = try? JSONDecoder().decode([MangaItem].self, from: data) {
+                return .success(items)
+            }
+
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                for wrapperKey in ["data", "items", "results"] {
+                    if let rawArray = json[wrapperKey],
+                       JSONSerialization.isValidJSONObject(rawArray),
+                       let arrayData = try? JSONSerialization.data(withJSONObject: rawArray),
+                       let items = try? JSONDecoder().decode([MangaItem].self, from: arrayData) {
+                        return .success(items)
+                    }
+                }
+            }
+
+            return .failure(.invalidResponse(sourceName: addon.name))
+        } catch {
+            return .failure(mapNetworkError(error, sourceName: addon.name))
+        }
+    }
+
     // MARK: - Helper ánh xạ lỗi mạng sang MangaSourceError
     private func mapNetworkError(_ error: Error, sourceName: String) -> MangaSourceError {
         if let urlError = error as? URLError {
@@ -364,366 +410,5 @@ public final class ProviderZBridge: @unchecked Sendable {
             }
         }
         return .custom(message: error.localizedDescription)
-    }
-
-    // MARK: - Các hàm gọi API chi tiết (Trả về Result chuẩn)
-    private func fetchOtruyenList(from urlString: String, sourceName: String) async -> Result<[MangaItem], MangaSourceError> {
-        guard let url = URL(string: urlString) else {
-            return .failure(.invalidUrl(urlString: urlString))
-        }
-        do {
-            var request = URLRequest(url: url)
-            request.setValue("https://otruyen.cc/", forHTTPHeaderField: "Referer")
-            let (data, response) = try await session.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                return .failure(.invalidResponse(sourceName: sourceName))
-            }
-            guard (200...299).contains(httpResponse.statusCode) else {
-                return .failure(.serverError(statusCode: httpResponse.statusCode, sourceName: sourceName))
-            }
-
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let dataObj = json["data"] as? [String: Any],
-               let items = dataObj["items"] as? [[String: Any]] {
-
-                let cdn = "https://img.otruyenapi.com/uploads/comics"
-                let mapped = items.compactMap { dict -> MangaItem? in
-                    guard let slug = dict["slug"] as? String,
-                          let name = dict["name"] as? String else { return nil }
-
-                    let thumb = dict["thumb_url"] as? String ?? ""
-                    let coverUrl = thumb.hasPrefix("http") ? thumb : "\(cdn)/\(thumb)"
-
-                    return MangaItem(
-                        id: slug,
-                        title: name,
-                        cover: coverUrl,
-                        posterUrl: coverUrl,
-                        url: "https://otruyenapi.com/v1/api/truyen-tranh/\(slug)",
-                        description: nil,
-                        status: dict["status"] as? String,
-                        genres: nil,
-                        authors: nil,
-                        chapters: nil
-                    )
-                }
-                return .success(mapped)
-            }
-            return .failure(.invalidResponse(sourceName: sourceName))
-        } catch {
-            return .failure(mapNetworkError(error, sourceName: sourceName))
-        }
-    }
-
-    private func fetchCuutruyenRecent(baseUrl: String, sourceName: String) async -> Result<[MangaItem], MangaSourceError> {
-        let urlStr = "\(baseUrl)/mangas/recently_updated"
-        guard let url = URL(string: urlStr) else {
-            return .failure(.invalidUrl(urlString: urlStr))
-        }
-        do {
-            let (data, response) = try await session.data(from: url)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                return .failure(.invalidResponse(sourceName: sourceName))
-            }
-            guard (200...299).contains(httpResponse.statusCode) else {
-                return .failure(.serverError(statusCode: httpResponse.statusCode, sourceName: sourceName))
-            }
-
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let dataArr = json["data"] as? [[String: Any]] {
-                let mapped = dataArr.compactMap { dict -> MangaItem? in
-                    guard let id = dict["id"] as? Int,
-                          let name = dict["name"] as? String else { return nil }
-                    let cover = dict["cover_url"] as? String ?? ""
-                    return MangaItem(
-                        id: "\(id)",
-                        title: name,
-                        cover: cover,
-                        posterUrl: cover,
-                        url: "\(baseUrl)/mangas/\(id)",
-                        description: dict["description"] as? String,
-                        status: nil,
-                        genres: ["Cửu Truyện"],
-                        authors: nil,
-                        chapters: nil
-                    )
-                }
-                return .success(mapped)
-            }
-            return .failure(.invalidResponse(sourceName: sourceName))
-        } catch {
-            return .failure(mapNetworkError(error, sourceName: sourceName))
-        }
-    }
-
-    private func fetchCuutruyenSearch(keyword: String, baseUrl: String, sourceName: String) async -> Result<[MangaItem], MangaSourceError> {
-        let urlStr = "\(baseUrl)/mangas/search?q=\(keyword)"
-        guard let url = URL(string: urlStr) else {
-            return .failure(.invalidUrl(urlString: urlStr))
-        }
-        do {
-            let (data, response) = try await session.data(from: url)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                return .failure(.invalidResponse(sourceName: sourceName))
-            }
-            guard (200...299).contains(httpResponse.statusCode) else {
-                return .failure(.serverError(statusCode: httpResponse.statusCode, sourceName: sourceName))
-            }
-
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let dataArr = json["data"] as? [[String: Any]] {
-                let mapped = dataArr.compactMap { dict -> MangaItem? in
-                    guard let id = dict["id"] as? Int,
-                          let name = dict["name"] as? String else { return nil }
-                    let cover = dict["cover_url"] as? String ?? ""
-                    return MangaItem(
-                        id: "\(id)",
-                        title: name,
-                        cover: cover,
-                        posterUrl: cover,
-                        url: "\(baseUrl)/mangas/\(id)",
-                        description: nil,
-                        status: nil,
-                        genres: ["Cửu Truyện"],
-                        authors: nil,
-                        chapters: nil
-                    )
-                }
-                return .success(mapped)
-            }
-            return .failure(.invalidResponse(sourceName: sourceName))
-        } catch {
-            return .failure(mapNetworkError(error, sourceName: sourceName))
-        }
-    }
-
-    private func fetchMangadexPopular(baseUrl: String, sourceName: String) async -> Result<[MangaItem], MangaSourceError> {
-        let urlStr = "\(baseUrl)/manga?limit=20&includes[]=cover_art&order[followedCount]=desc&availableTranslatedLanguage[]=vi"
-        guard let url = URL(string: urlStr) else {
-            return .failure(.invalidUrl(urlString: urlStr))
-        }
-
-        do {
-            let (data, response) = try await session.data(from: url)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                return .failure(.invalidResponse(sourceName: sourceName))
-            }
-            guard (200...299).contains(httpResponse.statusCode) else {
-                return .failure(.serverError(statusCode: httpResponse.statusCode, sourceName: sourceName))
-            }
-
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let dataArr = json["data"] as? [[String: Any]] {
-
-                let mapped = dataArr.compactMap { item -> MangaItem? in
-                    guard let id = item["id"] as? String,
-                          let attr = item["attributes"] as? [String: Any],
-                          let titleObj = attr["title"] as? [String: String],
-                          let title = titleObj.values.first else { return nil }
-
-                    var fileName: String?
-                    if let rels = item["relationships"] as? [[String: Any]] {
-                        for rel in rels {
-                            if (rel["type"] as? String) == "cover_art",
-                               let cAttr = rel["attributes"] as? [String: Any],
-                               let f = cAttr["fileName"] as? String {
-                                fileName = f
-                                break
-                            }
-                        }
-                    }
-
-                    let coverUrl = fileName != nil
-                        ? "https://uploads.mangadex.org/covers/\(id)/\(fileName!).256.jpg"
-                        : "https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?w=600"
-
-                    let feedUrl = "\(baseUrl)/manga/\(id)/feed?translatedLanguage[]=vi&order[chapter]=desc&limit=100"
-
-                    return MangaItem(
-                        id: id,
-                        title: title,
-                        cover: coverUrl,
-                        posterUrl: coverUrl,
-                        url: feedUrl,
-                        description: (attr["description"] as? [String: String])?.values.first,
-                        status: attr["status"] as? String,
-                        genres: ["MangaDex", "Manga"],
-                        authors: nil,
-                        chapters: nil
-                    )
-                }
-                return .success(mapped)
-            }
-            return .failure(.invalidResponse(sourceName: sourceName))
-        } catch {
-            return .failure(mapNetworkError(error, sourceName: sourceName))
-        }
-    }
-
-    private func fetchMangadexSearch(keyword: String, baseUrl: String, sourceName: String) async -> Result<[MangaItem], MangaSourceError> {
-        let urlStr = "\(baseUrl)/manga?title=\(keyword)&limit=20&includes[]=cover_art"
-        guard let url = URL(string: urlStr) else {
-            return .failure(.invalidUrl(urlString: urlStr))
-        }
-        do {
-            let (data, response) = try await session.data(from: url)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                return .failure(.invalidResponse(sourceName: sourceName))
-            }
-            guard (200...299).contains(httpResponse.statusCode) else {
-                return .failure(.serverError(statusCode: httpResponse.statusCode, sourceName: sourceName))
-            }
-
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let dataArr = json["data"] as? [[String: Any]] {
-                let mapped = dataArr.compactMap { item -> MangaItem? in
-                    guard let id = item["id"] as? String,
-                          let attr = item["attributes"] as? [String: Any],
-                          let titleObj = attr["title"] as? [String: String],
-                          let title = titleObj.values.first else { return nil }
-
-                    let coverUrl = "https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?w=600"
-                    let feedUrl = "\(baseUrl)/manga/\(id)/feed?order[chapter]=desc&limit=100"
-
-                    return MangaItem(
-                        id: id,
-                        title: title,
-                        cover: coverUrl,
-                        posterUrl: coverUrl,
-                        url: feedUrl,
-                        description: nil,
-                        status: attr["status"] as? String,
-                        genres: ["MangaDex"],
-                        authors: nil,
-                        chapters: nil
-                    )
-                }
-                return .success(mapped)
-            }
-            return .failure(.invalidResponse(sourceName: sourceName))
-        } catch {
-            return .failure(mapNetworkError(error, sourceName: sourceName))
-        }
-    }
-
-    private func fetchCustomAddonList(addon: MangaAddon) async -> Result<[MangaItem], MangaSourceError> {
-        guard let url = URL(string: addon.baseUrl) else {
-            return .failure(.invalidUrl(urlString: addon.baseUrl))
-        }
-        do {
-            let (data, response) = try await session.data(from: url)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                return .failure(.invalidResponse(sourceName: addon.name))
-            }
-            guard (200...299).contains(httpResponse.statusCode) else {
-                return .failure(.serverError(statusCode: httpResponse.statusCode, sourceName: addon.name))
-            }
-
-            if let items = try? JSONDecoder().decode([MangaItem].self, from: data) {
-                return .success(items)
-            }
-            return .failure(.invalidResponse(sourceName: addon.name))
-        } catch {
-            return .failure(mapNetworkError(error, sourceName: addon.name))
-        }
-    }
-
-    private func fallbackDetail(for item: MangaItem) -> MangaItem {
-        MangaItem(
-            id: item.id,
-            title: item.title,
-            cover: item.cover,
-            posterUrl: item.posterUrl,
-            url: item.url,
-            description: item.description ?? "Bộ truyện tranh đặc sắc, hấp dẫn.",
-            status: item.status ?? "Đang tiến hành",
-            genres: item.genres ?? ["Hành động", "Phiêu lưu"],
-            authors: item.authors ?? ["Đang cập nhật"],
-            chapters: item.chapters ?? fallbackChapters(for: item.id)
-        )
-    }
-
-    private func fallbackChapters(for mangaId: String) -> [MangaChapter] {
-        (1...20).reversed().map { ch in
-            MangaChapter(
-                id: "\(mangaId)-chap-\(ch)",
-                title: "Chương \(ch)",
-                chapterName: "\(ch)",
-                url: "mock://chapter/\(ch)",
-                date: "Mới cập nhật"
-            )
-        }
-    }
-
-    private func generateMockPages(count: Int) -> [MangaPage] {
-        let sampleImages = [
-            "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1080",
-            "https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?w=1080",
-            "https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?w=1080",
-            "https://images.unsplash.com/photo-1563089145-599997674d42?w=1080",
-            "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1080"
-        ]
-
-        return (0..<count).map { idx in
-            MangaPage(
-                index: idx,
-                url: sampleImages[idx % sampleImages.count],
-                headers: nil
-            )
-        }
-    }
-
-    // MARK: - Dữ Liệu Mẫu (Chỉ dùng khi người dùng chủ động chọn Xem Dữ Liệu Mẫu Ngoại Tuyến)
-    public var mockHomeManga: [MangaItem] {
-        [
-            MangaItem(
-                id: "one-piece",
-                title: "One Piece - Đảo Hải Tặc",
-                cover: "https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?w=600",
-                posterUrl: "https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?w=600",
-                url: "mock://one-piece",
-                description: "Hành trình tìm kiếm kho báu vĩ đại nhất thế giới của Monkey D. Luffy và băng Mũ Rơm.",
-                status: "Đang tiến hành",
-                genres: ["Hành Động", "Phiêu Lưu", "Hài Hước"],
-                authors: ["Eiichiro Oda"],
-                chapters: nil
-            ),
-            MangaItem(
-                id: "solo-leveling",
-                title: "Solo Leveling - Tôi Thăng Cấp Một Mình",
-                cover: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600",
-                posterUrl: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600",
-                url: "mock://solo-leveling",
-                description: "Thợ săn yếu nhất thế giới Sung Jin-Woo nhận được cơ hội thăng cấp không giới hạn.",
-                status: "Hoàn thành",
-                genres: ["Hành Động", "Giả Tưởng", "Trùng Sinh"],
-                authors: ["Chugong", "DUBU"],
-                chapters: nil
-            ),
-            MangaItem(
-                id: "jujutsu-kaisen",
-                title: "Jujutsu Kaisen - Chú Thuật Hồi Chiến",
-                cover: "https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?w=600",
-                posterUrl: "https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?w=600",
-                url: "mock://jujutsu-kaisen",
-                description: "Itadori Yuji nuốt ngón tay của Nguyền Vương Sukuna và bước vào thế giới chú thuật sư.",
-                status: "Đang tiến hành",
-                genres: ["Hành Động", "Kỳ Ảo", "Học Đường"],
-                authors: ["Gege Akutami"],
-                chapters: nil
-            ),
-            MangaItem(
-                id: "frieren",
-                title: "Sousou no Frieren - Pháp Sư Tiễn Táng",
-                cover: "https://images.unsplash.com/photo-1563089145-599997674d42?w=600",
-                posterUrl: "https://images.unsplash.com/photo-1563089145-599997674d42?w=600",
-                url: "mock://frieren",
-                description: "Hành trình sau khi đánh bại Ma Vương của nữ pháp sư elf bất tử Frieren.",
-                status: "Đang tiến hành",
-                genres: ["Phiêu Lưu", "Đời Thường", "Phép Thuật"],
-                authors: ["Kanehito Yamada"],
-                chapters: nil
-            )
-        ]
     }
 }

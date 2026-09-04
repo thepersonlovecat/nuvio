@@ -138,9 +138,24 @@ public struct MangaAddonsView: View {
                 Spacer()
             }
 
-            VStack(spacing: 10) {
-                ForEach(addonManager.addons) { addon in
-                    addonCard(addon)
+            if addonManager.addons.isEmpty {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "tray")
+                        .font(.system(size: 16))
+                        .foregroundColor(.gray)
+                    Text("Chưa có nguồn truyện nào. Dán link manifest.json của add-on ở ô bên trên để cài đặt nguồn đầu tiên.")
+                        .font(.system(size: 13))
+                        .foregroundColor(.gray)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(red: 20/255, green: 20/255, blue: 20/255))
+                .cornerRadius(14)
+            } else {
+                VStack(spacing: 10) {
+                    ForEach(addonManager.addons) { addon in
+                        addonCard(addon)
+                    }
                 }
             }
         }
@@ -157,7 +172,7 @@ public struct MangaAddonsView: View {
                         .fill(isActive ? Color(red: 139/255, green: 92/255, blue: 246/255).opacity(0.2) : Color.white.opacity(0.08))
                         .frame(width: 42, height: 42)
 
-                    Image(systemName: addon.isBuiltIn ? "sparkles" : "puzzlepiece.fill")
+                    Image(systemName: "puzzlepiece.fill")
                         .font(.system(size: 18))
                         .foregroundColor(isActive ? Color(red: 139/255, green: 92/255, blue: 246/255) : .gray)
                 }
@@ -169,23 +184,13 @@ public struct MangaAddonsView: View {
                             .font(.system(size: 15, weight: .bold))
                             .foregroundColor(.white)
 
-                        if addon.isBuiltIn {
-                            Text("Có sẵn")
-                                .font(.system(size: 10, weight: .medium))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.blue.opacity(0.25))
-                                .foregroundColor(.blue)
-                                .cornerRadius(4)
-                        } else {
-                            Text(addon.type.displayName)
-                                .font(.system(size: 10, weight: .medium))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.purple.opacity(0.25))
-                                .foregroundColor(.purple)
-                                .cornerRadius(4)
-                        }
+                        Text(addon.type.displayName)
+                            .font(.system(size: 10, weight: .medium))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.purple.opacity(0.25))
+                            .foregroundColor(.purple)
+                            .cornerRadius(4)
 
                         Spacer()
 
@@ -222,15 +227,14 @@ public struct MangaAddonsView: View {
 
                         Spacer()
 
-                        if !addon.isBuiltIn {
-                            Button {
-                                addonManager.removeAddon(id: addon.id)
-                            } label: {
-                                Image(systemName: "trash")
-                                    .font(.system(size: 13))
-                                    .foregroundColor(.red.opacity(0.8))
-                            }
+                        Button {
+                            addonManager.removeAddon(id: addon.id)
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 13))
+                                .foregroundColor(.red.opacity(0.8))
                         }
+                        .accessibilityLabel("Xóa add-on \(addon.name)")
                     }
                     .padding(.top, 4)
                 }

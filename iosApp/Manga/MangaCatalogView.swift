@@ -36,11 +36,17 @@ public final class MangaCatalogViewModel: ObservableObject {
     @Published public var showAddonsSheet: Bool = false
     @Published public var sourceStatus: MangaSourceStatus = .idle
     @Published public var loadError: MangaSourceError? = nil
-    @Published public var isUsingSampleData: Bool = false
+    /// Trạng thái tải thêm trang kế (infinite scroll)
+    @Published public var isLoadingMore: Bool = false
+    @Published public var canLoadMore: Bool = false
+    /// Lọc theo thể loại (áp dụng trên kết quả đã tải)
+    @Published public var selectedGenre: String? = nil
 
     private let bridge = ProviderZBridge.shared
     private let addonManager = MangaAddonManager.shared
     private let libraryStore = MangaLibraryStore.shared
+    private var searchDebounceTask: Task<Void, Never>?
+    private var currentPage: Int = 1
 
     public init() {
         Task {
@@ -48,30 +54,49 @@ public final class MangaCatalogViewModel: ObservableObject {
         }
     }
 
+    private var trimmedSearchText: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Danh sách thể loại có trong kết quả đã tải (để hiện thanh lọc nhanh).
+    public var availableGenres: [String] {
+        Array(Set(mangaList.compactMap { $0.genres }.flatMap { $0 })).sorted()
+    }
+
+    /// Danh sách hiển thị sau khi áp dụng bộ lọc thể loại.
+    public var displayedManga: [MangaItem] {
+        guard let genre = selectedGenre else { return mangaList }
+        return mangaList.filter { $0.genres?.contains(genre) == true }
+    }
+
     public func loadCatalog(showLoading: Bool = true) async {
+        searchDebounceTask?.cancel()
+        currentPage = 1
         if showLoading {
             isLoading = true
         }
         sourceStatus = .connecting
         loadError = nil
-        isUsingSampleData = false
 
-        let result = await bridge.fetchHomeManga(addon: addonManager.activeAddon)
+        let result = await bridge.fetchHomeManga(addon: addonManager.activeAddon, page: 1)
         if let err = result.error {
             loadError = err
             sourceStatus = .offline(error: err)
-            // Không âm thầm rơi về dữ liệu mẫu - giữ danh sách trống để hiện màn hình lỗi rõ ràng
+            // Giữ danh sách trống để hiện màn hình lỗi rõ ràng
             mangaList = []
+            canLoadMore = false
         } else {
             mangaList = result.items
             loadError = nil
             sourceStatus = .online(itemCount: result.items.count)
+            canLoadMore = result.hasMorePages
         }
         isLoading = false
     }
 
     public func search() async {
-        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        currentPage = 1
+        let trimmed = trimmedSearchText
         guard !trimmed.isEmpty else {
             await loadCatalog()
             return
@@ -80,26 +105,68 @@ public final class MangaCatalogViewModel: ObservableObject {
         isLoading = true
         sourceStatus = .connecting
         loadError = nil
-        isUsingSampleData = false
 
-        let result = await bridge.searchManga(query: trimmed, addon: addonManager.activeAddon)
+        let result = await bridge.searchManga(query: trimmed, addon: addonManager.activeAddon, page: 1)
         if let err = result.error {
             loadError = err
             sourceStatus = .offline(error: err)
             mangaList = []
+            canLoadMore = false
         } else {
             mangaList = result.items
             loadError = nil
             sourceStatus = .online(itemCount: result.items.count)
+            canLoadMore = result.hasMorePages
         }
         isLoading = false
     }
 
-    public func loadSampleData() {
-        mangaList = bridge.mockHomeManga
-        loadError = nil
-        isUsingSampleData = true
-        sourceStatus = .online(itemCount: mangaList.count)
+    /// Tự động tìm kiếm sau khi người dùng ngừng gõ ~0.5s,
+    /// tránh gọi API liên tục theo từng ký tự.
+    public func searchTextDidChange() {
+        searchDebounceTask?.cancel()
+        searchDebounceTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled, let self else { return }
+            await self.search()
+        }
+    }
+
+    /// Tìm ngay lập tức (khi người dùng bấm nút Search trên bàn phím).
+    public func searchImmediately() {
+        searchDebounceTask?.cancel()
+        Task { await search() }
+    }
+
+    /// Tải trang kế tiếp và nối vào danh sách (infinite scroll).
+    /// Có lọc trùng theo id để phòng nguồn trả về dữ liệu lặp.
+    public func loadNextPage() async {
+        guard canLoadMore, !isLoading, !isLoadingMore else { return }
+        isLoadingMore = true
+        let nextPage = currentPage + 1
+
+        let result: MangaCatalogLoadResult
+        let trimmed = trimmedSearchText
+        if trimmed.isEmpty {
+            result = await bridge.fetchHomeManga(addon: addonManager.activeAddon, page: nextPage)
+        } else {
+            result = await bridge.searchManga(query: trimmed, addon: addonManager.activeAddon, page: nextPage)
+        }
+
+        if result.error == nil {
+            let existingIDs = Set(mangaList.map(\.id))
+            let newItems = result.items.filter { !existingIDs.contains($0.id) }
+            if newItems.isEmpty {
+                // Trang mới toàn dữ liệu trùng/rỗng -> coi như đã hết
+                canLoadMore = false
+            } else {
+                mangaList.append(contentsOf: newItems)
+                currentPage = nextPage
+                canLoadMore = result.hasMorePages
+                sourceStatus = .online(itemCount: mangaList.count)
+            }
+        }
+        isLoadingMore = false
     }
 
     public func selectManga(_ item: MangaItem) {
@@ -151,7 +218,6 @@ public final class MangaCatalogViewModel: ObservableObject {
 // MARK: - Manga Source Status Badge (Chấm & Nhãn trạng thái nguồn)
 struct MangaSourceStatusBadge: View {
     let status: MangaSourceStatus
-    let isUsingSampleData: Bool
 
     var body: some View {
         HStack(spacing: 5) {
@@ -170,9 +236,6 @@ struct MangaSourceStatusBadge: View {
     }
 
     private var indicatorColor: Color {
-        if isUsingSampleData {
-            return .orange
-        }
         switch status {
         case .idle:
             return .gray
@@ -186,9 +249,6 @@ struct MangaSourceStatusBadge: View {
     }
 
     private var textColor: Color {
-        if isUsingSampleData {
-            return .orange
-        }
         switch status {
         case .idle:
             return .gray
@@ -202,9 +262,6 @@ struct MangaSourceStatusBadge: View {
     }
 
     private var statusTitle: String {
-        if isUsingSampleData {
-            return "Dữ liệu mẫu ngoại tuyến"
-        }
         switch status {
         case .idle:
             return "Sẵn sàng"
@@ -224,7 +281,6 @@ struct MangaSourceErrorCard: View {
     let sourceName: String
     let onRetry: () -> Void
     let onChangeSource: () -> Void
-    let onUseSampleData: () -> Void
 
     var body: some View {
         VStack(spacing: 16) {
@@ -318,14 +374,6 @@ struct MangaSourceErrorCard: View {
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
 
-                // Nút Xem Dữ Liệu Mẫu Ngoại Tuyến (Tertiary CTA)
-                Button(action: onUseSampleData) {
-                    Text("Xem tạm dữ liệu mẫu ngoại tuyến")
-                        .font(.caption.weight(.medium))
-                        .foregroundColor(.gray)
-                        .underline()
-                        .padding(.vertical, 4)
-                }
             }
             .padding(.top, 6)
             .padding(.horizontal, 8)
@@ -355,6 +403,8 @@ struct MangaSourceErrorCard: View {
             return "exclamationmark.icloud.fill"
         case .emptyData:
             return "tray.fill"
+        case .noAddonInstalled:
+            return "puzzlepiece.extension"
         case .invalidUrl, .custom:
             return "exclamationmark.triangle.fill"
         }
@@ -372,6 +422,8 @@ struct MangaSourceErrorCard: View {
             return "Dữ liệu nguồn không hợp lệ"
         case .emptyData:
             return "Không có dữ liệu truyện"
+        case .noAddonInstalled:
+            return "Chưa cài đặt nguồn truyện"
         case .invalidUrl, .custom:
             return "Không thể tải từ nguồn này"
         }
@@ -384,27 +436,7 @@ struct MangaPosterCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ZStack {
-                Color(red: 0.12, green: 0.12, blue: 0.12)
-
-                AsyncImage(url: URL(string: item.displayCover)) { phase in
-                    switch phase {
-                    case .empty:
-                        ProgressView()
-                            .tint(.white)
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    case .failure:
-                        Image(systemName: "book.closed.fill")
-                            .font(.system(size: 30))
-                            .foregroundColor(.gray)
-                    @unknown default:
-                        EmptyView()
-                    }
-                }
-            }
+            MangaCoverImageView(urlString: item.displayCover)
             .frame(height: 180)
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(
@@ -426,13 +458,7 @@ struct MangaContinueReadingCard: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            AsyncImage(url: URL(string: progress.mangaCover)) { phase in
-                if let image = phase.image {
-                    image.resizable().aspectRatio(contentMode: .fill)
-                } else {
-                    Color.white.opacity(0.1)
-                }
-            }
+            MangaCoverImageView(urlString: progress.mangaCover)
             .frame(width: 54, height: 76)
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
@@ -472,13 +498,7 @@ struct MangaFollowedCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            AsyncImage(url: URL(string: series.mangaCover)) { phase in
-                if let image = phase.image {
-                    image.resizable().aspectRatio(contentMode: .fill)
-                } else {
-                    Color.white.opacity(0.1)
-                }
-            }
+            MangaCoverImageView(urlString: series.mangaCover)
             .frame(width: 96, height: 132)
             .clipShape(RoundedRectangle(cornerRadius: 9))
 
@@ -506,13 +526,7 @@ struct MangaReadingHistoryCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            AsyncImage(url: URL(string: progress.mangaCover)) { phase in
-                if let image = phase.image {
-                    image.resizable().aspectRatio(contentMode: .fill)
-                } else {
-                    Color.white.opacity(0.1)
-                }
-            }
+            MangaCoverImageView(urlString: progress.mangaCover)
             .frame(width: 100, height: 140)
             .clipShape(RoundedRectangle(cornerRadius: 9))
 
@@ -545,13 +559,7 @@ struct MangaDetailSheet: View {
                 VStack(alignment: .leading, spacing: 18) {
                     // Header (Cover + Info)
                     HStack(alignment: .top, spacing: 16) {
-                        AsyncImage(url: URL(string: manga.displayCover)) { phase in
-                            if let img = phase.image {
-                                img.resizable().aspectRatio(contentMode: .fill)
-                            } else {
-                                Color.gray.opacity(0.2)
-                            }
-                        }
+                        MangaCoverImageView(urlString: manga.displayCover)
                         .frame(width: 110, height: 160)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
 
@@ -606,7 +614,7 @@ struct MangaDetailSheet: View {
                         if libraryStore.isFollowing(mangaID: manga.id) {
                             libraryStore.unfollow(mangaID: manga.id)
                         } else {
-                            libraryStore.follow(manga, addonID: MangaAddonManager.shared.activeAddon.id)
+                            libraryStore.follow(manga, addonID: MangaAddonManager.shared.activeAddon?.id ?? "")
                         }
                     } label: {
                         let isFollowing = libraryStore.isFollowing(mangaID: manga.id)
@@ -736,6 +744,25 @@ public struct MangaCatalogView: View {
 
     public init() {}
 
+    /// Nút chip lọc thể loại
+    private func genreChip(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundColor(isSelected ? .white : Color(red: 196/255, green: 181/255, blue: 253/255))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(
+                    isSelected
+                        ? Color(red: 139/255, green: 92/255, blue: 246/255)
+                        : Color(red: 139/255, green: 92/255, blue: 246/255).opacity(0.15)
+                )
+                .clipShape(Capsule())
+        }
+        .accessibilityLabel("Thể loại \(title)")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
     public var body: some View {
         NavigationStack {
             ZStack {
@@ -806,23 +833,28 @@ public struct MangaCatalogView: View {
                             }
                         }
 
-                        // Thanh tìm kiếm
+                        // Thanh tìm kiếm (tự động tìm sau khi ngừng gõ ~0.5s)
                         HStack {
                             Image(systemName: "magnifyingglass")
                                 .foregroundColor(.gray)
-                            TextField("Tìm truyện trên \(addonManager.activeAddon.name)...", text: $viewModel.searchText)
+                            TextField("Tìm truyện trên \(addonManager.activeAddon?.name ?? "nguồn đã cài")...", text: $viewModel.searchText)
                                 .foregroundColor(.white)
+                                .submitLabel(.search)
                                 .onSubmit {
-                                    Task { await viewModel.search() }
+                                    viewModel.searchImmediately()
+                                }
+                                .onChange(of: viewModel.searchText) { _ in
+                                    viewModel.searchTextDidChange()
                                 }
                             if !viewModel.searchText.isEmpty {
                                 Button(action: {
+                                    // Xóa chữ -> onChange sẽ tự quay về trang chủ qua debounce
                                     viewModel.searchText = ""
-                                    Task { await viewModel.loadCatalog() }
                                 }) {
                                     Image(systemName: "xmark.circle.fill")
                                         .foregroundColor(.gray)
                                 }
+                                .accessibilityLabel("Xóa từ khóa tìm kiếm")
                             }
                         }
                         .padding(12)
@@ -830,44 +862,21 @@ public struct MangaCatalogView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                         .padding(.horizontal, 16)
 
-                        // 1. Banner thông báo nếu người dùng chủ động xem dữ liệu mẫu
-                        if viewModel.isUsingSampleData {
-                            HStack(alignment: .center, spacing: 10) {
-                                Image(systemName: "info.circle.fill")
-                                    .foregroundColor(.orange)
-                                    .font(.system(size: 15))
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Đang xem dữ liệu mẫu ngoại tuyến")
-                                        .font(.caption.weight(.bold))
-                                        .foregroundColor(.white)
-                                    Text("Dữ liệu này chỉ dùng để xem thử giao diện đọc truyện.")
-                                        .font(.caption2)
-                                        .foregroundColor(.gray)
+                        // Thanh lọc nhanh theo thể loại (chỉ hiện khi kết quả có dữ liệu thể loại)
+                        if viewModel.availableGenres.count > 1 {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    genreChip(title: "Tất cả", isSelected: viewModel.selectedGenre == nil) {
+                                        viewModel.selectedGenre = nil
+                                    }
+                                    ForEach(viewModel.availableGenres, id: \.self) { genre in
+                                        genreChip(title: genre, isSelected: viewModel.selectedGenre == genre) {
+                                            viewModel.selectedGenre = genre
+                                        }
+                                    }
                                 }
-
-                                Spacer(minLength: 0)
-
-                                Button {
-                                    Task { await viewModel.loadCatalog() }
-                                } label: {
-                                    Text("Kết nối nguồn thật")
-                                        .font(.caption.weight(.bold))
-                                        .foregroundColor(.black)
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 5)
-                                        .background(Color.orange)
-                                        .clipShape(Capsule())
-                                }
+                                .padding(.horizontal, 16)
                             }
-                            .padding(10)
-                            .background(Color.orange.opacity(0.12))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(Color.orange.opacity(0.3), lineWidth: 1)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                            .padding(.horizontal, 16)
                         }
 
                         // 2. Banner cảnh báo lỗi khi vẫn còn danh sách truyện cũ hiển thị
@@ -899,10 +908,7 @@ public struct MangaCatalogView: View {
                                     .font(.title3.bold())
                                     .foregroundColor(.white)
 
-                                MangaSourceStatusBadge(
-                                    status: viewModel.sourceStatus,
-                                    isUsingSampleData: viewModel.isUsingSampleData
-                                )
+                                MangaSourceStatusBadge(status: viewModel.sourceStatus)
                             }
 
                             Spacer()
@@ -936,7 +942,7 @@ public struct MangaCatalogView: View {
                                 HStack(spacing: 5) {
                                     Image(systemName: "puzzlepiece.extension.fill")
                                         .font(.system(size: 11))
-                                    Text(addonManager.activeAddon.name)
+                                    Text(addonManager.activeAddon?.name ?? "Chọn nguồn")
                                         .font(.system(size: 12, weight: .bold))
                                         .lineLimit(1)
                                     Image(systemName: "chevron.down")
@@ -956,34 +962,31 @@ public struct MangaCatalogView: View {
                             VStack(spacing: 12) {
                                 Spacer(minLength: 80)
                                 ProgressView().tint(.purple).scaleEffect(1.2)
-                                Text("Đang tải từ \(addonManager.activeAddon.name)...")
+                                Text("Đang tải từ \(addonManager.activeAddon?.name ?? "nguồn truyện")...")
                                     .font(.caption)
                                     .foregroundColor(.gray)
                                 Spacer()
                             }
                             .frame(maxWidth: .infinity)
                         } else if let error = viewModel.loadError, viewModel.mangaList.isEmpty {
-                            // HIỂN THỊ LỖI DỄ HIỂU VÀ NÚT THỬ LẠI (Không âm thầm rơi về dữ liệu mẫu)
+                            // HIỂN THỊ LỖI DỄ HIỂU VÀ NÚT THỬ LẠI
                             MangaSourceErrorCard(
                                 error: error,
-                                sourceName: addonManager.activeAddon.name,
+                                sourceName: addonManager.activeAddon?.name ?? "Chưa có",
                                 onRetry: {
                                     Task { await viewModel.loadCatalog() }
                                 },
                                 onChangeSource: {
                                     viewModel.showAddonsSheet = true
-                                },
-                                onUseSampleData: {
-                                    viewModel.loadSampleData()
                                 }
                             )
-                        } else if viewModel.mangaList.isEmpty {
+                        } else if viewModel.displayedManga.isEmpty {
                             VStack(spacing: 12) {
                                 Spacer(minLength: 60)
                                 Image(systemName: viewModel.searchText.isEmpty ? "books.vertical" : "magnifyingglass")
                                     .font(.system(size: 40))
                                     .foregroundColor(.gray.opacity(0.7))
-                                Text(viewModel.searchText.isEmpty ? "Không có truyện nào từ nguồn này" : "Không tìm thấy truyện phù hợp")
+                                Text(emptyStateTitle)
                                     .font(.headline)
                                     .foregroundColor(.white)
                                 if !viewModel.searchText.isEmpty {
@@ -1018,15 +1021,37 @@ public struct MangaCatalogView: View {
                             .frame(maxWidth: .infinity)
                         } else {
                             LazyVGrid(columns: columns, spacing: 16) {
-                                ForEach(viewModel.mangaList) { item in
+                                ForEach(viewModel.displayedManga) { item in
                                     MangaPosterCard(item: item)
                                         .onTapGesture {
                                             viewModel.selectManga(item)
                                         }
+                                        .accessibilityElement(children: .combine)
+                                        .accessibilityLabel(item.title)
+                                        .accessibilityHint("Chạm để xem chi tiết và danh sách chương")
+                                        .onAppear {
+                                            // Cuộn gần tới cuối -> tự tải trang kế tiếp
+                                            if item.id == viewModel.displayedManga.last?.id {
+                                                Task { await viewModel.loadNextPage() }
+                                            }
+                                        }
                                     }
                             }
                             .padding(.horizontal, 16)
-                            .padding(.bottom, 30)
+
+                            // Chỉ báo đang tải thêm trang mới
+                            if viewModel.isLoadingMore {
+                                HStack(spacing: 8) {
+                                    ProgressView().tint(.purple)
+                                    Text("Đang tải thêm truyện...")
+                                        .font(.caption)
+                                        .foregroundColor(.gray)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                            }
+
+                            Spacer(minLength: 30)
                         }
                     }
                     .padding(.top, 10)
@@ -1046,6 +1071,7 @@ public struct MangaCatalogView: View {
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundColor(Color(red: 167/255, green: 139/255, blue: 250/255))
                     }
+                    .accessibilityLabel("Quản lý Add-on truyện")
                 }
             }
             .sheet(isPresented: $viewModel.showAddonsSheet, onDismiss: {
@@ -1073,5 +1099,13 @@ public struct MangaCatalogView: View {
             }
         }
         .preferredColorScheme(.dark)
+    }
+
+    /// Tiêu đề trạng thái trống tùy theo ngữ cảnh: lọc thể loại / tìm kiếm / nguồn rỗng
+    private var emptyStateTitle: String {
+        if viewModel.selectedGenre != nil, !viewModel.mangaList.isEmpty {
+            return "Không có truyện thuộc thể loại này"
+        }
+        return viewModel.searchText.isEmpty ? "Không có truyện nào từ nguồn này" : "Không tìm thấy truyện phù hợp"
     }
 }

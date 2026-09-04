@@ -30,13 +30,25 @@ Mỗi Add-on truyện bắt buộc phải có một file manifest dạng JSON:
   "icon": "https://example.com/icon.png",
   "type": "provider_z_json",
   "endpoints": {
-    "home": "/v1/home",
-    "search": "/v1/search?q={query}",
+    "home": "/v1/home?page={page}",
+    "search": "/v1/search?q={query}&page={page}",
     "detail": "/v1/manga/{id}",
     "chapter": "/v1/chapter/{id}"
+  },
+  "headers": {
+    "Referer": "https://example.com/"
   }
 }
 ```
+
+**Biến hỗ trợ trong `endpoints`:**
+| Biến | Dùng cho | Mô tả |
+| :--- | :--- | :--- |
+| `{query}` | `search` | Từ khóa người dùng nhập (đã được URL-encode). |
+| `{id}` | `detail`, `chapter` | Mã định danh (`id`) của truyện / chương. |
+| `{page}` | `home`, `search` | Số trang (bắt đầu từ 1). Chỉ khi template chứa `{page}`, app mới bật tính năng tự tải thêm (infinite scroll). |
+
+> Đường dẫn bắt đầu bằng `/` sẽ được ghép sau `baseUrl`. URL đầy đủ (`https://...`) được dùng nguyên vẹn. Nếu không khai báo `endpoints.home`, app sẽ gọi trực tiếp `baseUrl` làm danh sách trang chủ.
 
 ### Giải thích các trường:
 | Trường | Bắt buộc | Kiểu | Mô tả |
@@ -47,7 +59,9 @@ Mỗi Add-on truyện bắt buộc phải có một file manifest dạng JSON:
 | `baseUrl` | Có | String | Địa chỉ gốc của server API (bắt buộc `https://`). |
 | `description`| Không | String | Mô tả ngắn gọn về nguồn truyện hoặc nhóm dịch. |
 | `icon` | Không | String | Link ảnh đại diện vuông cho Add-on (khuyến nghị 128x128). |
-| `type` | Có | String | `built_in`, `provider_z_json`, hoặc `custom_rest`. |
+| `type` | Có | String | `provider_z_json` hoặc `custom_rest`. *(App không còn chèn cứng nguồn `built_in` — mọi nguồn đều do người dùng tự cài.)* |
+| `endpoints` | Không | Object | Mẫu URL cho `home` / `search` / `detail` / `chapter` (xem bảng biến bên trên). |
+| `headers` | Không | Object | Header HTTP gửi kèm **mọi request** tới nguồn (API lẫn ảnh CDN), ví dụ `Referer` chống hotlink. |
 
 ---
 

@@ -134,6 +134,28 @@ public enum MangaAddonType: String, Codable, CaseIterable {
     }
 }
 
+// MARK: - Manga Add-on Endpoints (Khai báo trong manifest.json)
+/// Mẫu URL cho từng chức năng. Hỗ trợ biến: {query} (từ khóa), {id} (mã truyện), {page} (số trang).
+/// Đường dẫn bắt đầu bằng "/" sẽ được ghép sau baseUrl; URL đầy đủ (http...) được dùng nguyên vẹn.
+public struct MangaAddonEndpoints: Codable, Hashable {
+    public var home: String?
+    public var search: String?
+    public var detail: String?
+    public var chapter: String?
+
+    public init(home: String? = nil, search: String? = nil, detail: String? = nil, chapter: String? = nil) {
+        self.home = home
+        self.search = search
+        self.detail = detail
+        self.chapter = chapter
+    }
+
+    /// Nguồn có hỗ trợ phân trang (template chứa {page}) hay không.
+    public var supportsPagination: Bool {
+        (home?.contains("{page}") ?? false) || (search?.contains("{page}") ?? false)
+    }
+}
+
 // MARK: - Manga Add-on Definition
 public struct MangaAddon: Identifiable, Codable, Hashable {
     public let id: String
@@ -146,6 +168,10 @@ public struct MangaAddon: Identifiable, Codable, Hashable {
     public var type: MangaAddonType
     public var isEnabled: Bool
     public var isBuiltIn: Bool
+    /// Các endpoint tùy chỉnh của nguồn (nil = dùng quy ước mặc định theo baseUrl).
+    public var endpoints: MangaAddonEndpoints?
+    /// Header HTTP gửi kèm mọi request tới nguồn này (ví dụ Referer chống hotlink).
+    public var headers: [String: String]?
 
     public init(
         id: String,
@@ -155,9 +181,11 @@ public struct MangaAddon: Identifiable, Codable, Hashable {
         baseUrl: String,
         iconUrl: String? = nil,
         manifestUrl: String? = nil,
-        type: MangaAddonType = .builtInRest,
+        type: MangaAddonType = .customRest,
         isEnabled: Bool = true,
-        isBuiltIn: Bool = false
+        isBuiltIn: Bool = false,
+        endpoints: MangaAddonEndpoints? = nil,
+        headers: [String: String]? = nil
     ) {
         self.id = id
         self.name = name
@@ -169,6 +197,8 @@ public struct MangaAddon: Identifiable, Codable, Hashable {
         self.type = type
         self.isEnabled = isEnabled
         self.isBuiltIn = isBuiltIn
+        self.endpoints = endpoints
+        self.headers = headers
     }
 }
 
@@ -181,6 +211,8 @@ public struct MangaAddonManifest: Codable {
     public let baseUrl: String?
     public let icon: String?
     public let type: String?
+    public let endpoints: MangaAddonEndpoints?
+    public let headers: [String: String]?
 
     public func toAddon(manifestUrl: String) -> MangaAddon {
         MangaAddon(
@@ -191,9 +223,11 @@ public struct MangaAddonManifest: Codable {
             baseUrl: baseUrl ?? manifestUrl,
             iconUrl: icon,
             manifestUrl: manifestUrl,
-            type: .providerZJson,
+            type: MangaAddonType(rawValue: type ?? "") ?? .providerZJson,
             isEnabled: true,
-            isBuiltIn: false
+            isBuiltIn: false,
+            endpoints: endpoints,
+            headers: headers
         )
     }
 }
