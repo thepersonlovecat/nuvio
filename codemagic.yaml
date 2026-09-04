@@ -3,6 +3,11 @@ workflows:
     name: Build Nuvio iOS (Unsigned IPA)
     max_build_duration: 60
     instance_type: mac_mini_m2
+    cache:
+      cache_paths:
+        - ~/.gradle/caches
+        - ~/.gradle/wrapper
+        - ~/.konan
     environment:
       xcode: latest
       java: 17
@@ -97,6 +102,8 @@ workflows:
           filtered.append('kotlin.daemon.jvmargs=-Xmx6144m')
           # Kotlin/Native linking runs in a separate JVM; this exact camel-case key configures it.
           filtered.append('kotlin.native.jvmArgs=-Xmx6144m -XX:+UseG1GC -XX:MaxMetaspaceSize=1024m')
+          filtered.append('org.gradle.caching=true')
+          filtered.append('org.gradle.parallel=true')
 
           with open(path, 'w', encoding='utf-8') as f:
               f.write('\n'.join(filtered) + '\n')
