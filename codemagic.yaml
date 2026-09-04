@@ -16,21 +16,23 @@ workflows:
           fi
 
           echo "=== 2. Chuẩn bị ComposeApp & Gradle Build Core ==="
-          if [ ! -f "../gradlew" ] || [ ! -d "../composeApp" ]; then
+          if [ ! -d "/tmp/NuvioMobile" ]; then
             echo "Tải KMP Core từ NuvioMobile (branch cmp-rewrite)..."
-            rm -rf /tmp/NuvioMobile
             git clone --depth 1 --branch cmp-rewrite https://github.com/NuvioMedia/NuvioMobile.git /tmp/NuvioMobile
-            
-            cp -r /tmp/NuvioMobile/gradle* ../
-            cp -r /tmp/NuvioMobile/build.gradle.kts ../
-            cp -r /tmp/NuvioMobile/settings.gradle.kts ../
-            cp -r /tmp/NuvioMobile/composeApp ../
-            cp -r /tmp/NuvioMobile/androidApp ../
-            chmod +x ../gradlew
-
-            # Tối ưu: Loại bỏ include(":androidApp") để Gradle chỉ tập trung biên dịch iOS framework, tránh lỗi thiếu thư mục Android
-            python3 -c "p='../settings.gradle.kts'; c=open(p).read(); open(p,'w').write(c.replace('include(\":androidApp\")','// include(\":androidApp\")'))"
           fi
+
+          echo "Sao chép các thành phần Gradle và KMP..."
+          cp -r /tmp/NuvioMobile/gradle* ../
+          cp -r /tmp/NuvioMobile/build.gradle.kts ../
+          cp -r /tmp/NuvioMobile/settings.gradle.kts ../
+          cp -r /tmp/NuvioMobile/composeApp ../
+          cp -r /tmp/NuvioMobile/androidApp ../
+          cp -r /tmp/NuvioMobile/store.json ../ 2>/dev/null || true
+          cp -r /tmp/NuvioMobile/vendor ../ 2>/dev/null || true
+          chmod +x ../gradlew
+
+          echo "Cấu hình settings.gradle.kts cho iOS..."
+          python3 -c "p='../settings.gradle.kts'; c=open(p).read(); open(p,'w').write(c.replace('include(\":androidApp\")','// include(\":androidApp\")'))"
 
           echo "=== 3. Kiểm tra môi trường thư mục cha ==="
           ls -la ../
@@ -39,11 +41,15 @@ workflows:
         script: |
           echo "=== Bắt đầu biên dịch Xcode Archive (Unsigned) ==="
           
-          # Thiết lập JAVA_HOME cho Gradle nếu chưa có
+          # Thiết lập JAVA_HOME cho Gradle
           if [ -z "$JAVA_HOME" ]; then
             export JAVA_HOME=$(/usr/libexec/java_home -v 17 2>/dev/null || echo "/opt/homebrew/opt/openjdk@17")
           fi
           export PATH="$JAVA_HOME/bin:$PATH"
+
+          # Tối ưu RAM cho Gradle Daemon trên máy ảo Mac Mini (tránh OOM 12GB)
+          export GRADLE_OPTS="-Xmx4096M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1024m"
+          export KOTLIN_DAEMON_JVMARGS="-Xmx4096M"
 
           xcodebuild \
             -project iosApp.xcodeproj \
