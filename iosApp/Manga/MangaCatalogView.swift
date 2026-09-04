@@ -106,6 +106,7 @@ struct MangaDetailSheet: View {
     let isLoadingDetail: Bool
     let onSelectChapter: (MangaChapter) -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var showChapterPicker = false
 
     var body: some View {
         NavigationStack {
@@ -188,7 +189,7 @@ struct MangaDetailSheet: View {
 
                         if let chapters = manga.chapters, !chapters.isEmpty {
                             LazyVStack(spacing: 8) {
-                                ForEach(chapters) { ch in
+                                ForEach(chapters.prefix(5)) { ch in
                                     Button(action: {
                                         onSelectChapter(ch)
                                     }) {
@@ -214,6 +215,18 @@ struct MangaDetailSheet: View {
                                     }
                                 }
                             }
+
+                            Button {
+                                showChapterPicker = true
+                            } label: {
+                                Label("Xem và chọn tất cả \(chapters.count) chương", systemImage: "list.number")
+                                    .font(.subheadline.weight(.semibold))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 11)
+                                    .background(Color.purple.opacity(0.22))
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
+                            .foregroundColor(.white)
                         } else if !isLoadingDetail {
                             Text("Không có dữ liệu chương.")
                                 .font(.caption)
@@ -235,6 +248,22 @@ struct MangaDetailSheet: View {
             }
         }
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $showChapterPicker) {
+            if let chapters = manga.chapters {
+                MangaChapterPickerView(
+                    chapters: chapters,
+                    onSelectChapter: { chapter in
+                        showChapterPicker = false
+                        // Let the picker dismiss before the detail sheet closes and
+                        // MangaCatalogView presents the reader.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            onSelectChapter(chapter)
+                        }
+                    }
+                )
+                .presentationDetents([.large])
+            }
+        }
     }
 }
 
