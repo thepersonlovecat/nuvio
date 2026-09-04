@@ -17,8 +17,10 @@ workflows:
 
           echo "=== 2. Chuẩn bị ComposeApp & Gradle Build Core ==="
           if [ ! -d "/tmp/NuvioMobile" ]; then
-            echo "Tải KMP Core từ NuvioMobile (branch cmp-rewrite)..."
-            git clone --depth 1 --branch cmp-rewrite https://github.com/NuvioMedia/NuvioMobile.git /tmp/NuvioMobile
+            echo "Tải riêng KMP Core cần cho iOS từ NuvioMobile (branch cmp-rewrite)..."
+            git clone --depth 1 --filter=blob:none --sparse --branch cmp-rewrite https://github.com/NuvioMedia/NuvioMobile.git /tmp/NuvioMobile
+            git -C /tmp/NuvioMobile sparse-checkout set --no-cone \
+              /gradle/ /gradlew /gradlew.bat /gradle.properties /build.gradle.kts /settings.gradle.kts /composeApp/
           fi
 
           echo "Sao chép các thành phần Gradle và KMP..."
@@ -26,9 +28,6 @@ workflows:
           cp -r /tmp/NuvioMobile/build.gradle.kts ../
           cp -r /tmp/NuvioMobile/settings.gradle.kts ../
           cp -r /tmp/NuvioMobile/composeApp ../
-          cp -r /tmp/NuvioMobile/androidApp ../
-          cp -r /tmp/NuvioMobile/store.json ../ 2>/dev/null || true
-          cp -r /tmp/NuvioMobile/vendor ../ 2>/dev/null || true
           chmod +x ../gradlew
 
           echo "Cấu hình settings.gradle.kts cho iOS..."
