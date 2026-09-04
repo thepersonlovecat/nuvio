@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 // MARK: - Manga Catalog ViewModel
@@ -8,7 +9,7 @@ public final class MangaCatalogViewModel: ObservableObject {
     @Published public var isLoading: Bool = false
     @Published public var selectedManga: MangaItem? = nil
     @Published public var isLoadingDetail: Bool = false
-    @Published public var activeReadingChapter: MangaChapter? = nil
+    @Published public var activeReadingSession: MangaReadingSession? = nil
 
     private let bridge = ProviderZBridge.shared
 
@@ -37,6 +38,19 @@ public final class MangaCatalogViewModel: ObservableObject {
             let detailed = await bridge.fetchDetail(for: item)
             self.selectedManga = detailed
             self.isLoadingDetail = false
+        }
+    }
+
+    public func startReading(_ chapter: MangaChapter) {
+        guard let manga = selectedManga else { return }
+
+        // A view controller cannot reliably present a full-screen cover while
+        // it is already presenting the detail sheet. Dismiss first, then open
+        // the reader after the sheet's dismissal animation has completed.
+        let session = MangaReadingSession(manga: manga, chapter: chapter)
+        selectedManga = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            self?.activeReadingSession = session
         }
     }
 }
@@ -325,19 +339,17 @@ public struct MangaCatalogView: View {
                     manga: manga,
                     isLoadingDetail: viewModel.isLoadingDetail,
                     onSelectChapter: { chapter in
-                        viewModel.activeReadingChapter = chapter
+                        viewModel.startReading(chapter)
                     }
                 )
             }
-            .fullScreenCover(item: $viewModel.activeReadingChapter) { chapter in
-                if let manga = viewModel.selectedManga {
-                    MangaReaderView(
-                        viewModel: MangaReaderViewModel(
-                            manga: manga,
-                            initialChapter: chapter
-                        )
+            .fullScreenCover(item: $viewModel.activeReadingSession) { session in
+                MangaReaderView(
+                    viewModel: MangaReaderViewModel(
+                        manga: session.manga,
+                        initialChapter: session.chapter
                     )
-                }
+                )
             }
         }
         .preferredColorScheme(.dark)

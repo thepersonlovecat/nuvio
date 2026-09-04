@@ -74,6 +74,20 @@ public struct MangaChapter: Identifiable, Codable, Hashable {
     }
 }
 
+/// Keeps the manga details alive while the detail sheet is dismissed before
+/// presenting the reader as a full-screen cover.
+public struct MangaReadingSession: Identifiable {
+    public let manga: MangaItem
+    public let chapter: MangaChapter
+
+    public var id: String { "\(manga.id)::\(chapter.id)" }
+
+    public init(manga: MangaItem, chapter: MangaChapter) {
+        self.manga = manga
+        self.chapter = chapter
+    }
+}
+
 // MARK: - Manga Page Model
 public struct MangaPage: Identifiable, Codable, Hashable {
     public var id: String { "\(index)_\(url)" }
