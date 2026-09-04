@@ -1,0 +1,48 @@
+workflows:
+  ios-unsigned-build:
+    name: Build Nuvio iOS (Unsigned IPA)
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      xcode: latest
+      node: latest
+    scripts:
+      - name: Kiểm tra & Chuẩn bị môi trường build
+        script: |
+          echo "=== Thông tin môi trường ==="
+          xcodebuild -version
+          sw_vers
+
+          # Kiểm tra thư mục MPVKit nếu cần thiết
+          if [ ! -d "../MPVKit" ]; then
+            echo "MPVKit không tìm thấy ở thư mục cha, tiến hành kiểm tra..."
+          fi
+
+      - name: Build Archive Xcode (Không cần Chứng chỉ - Unsigned)
+        script: |
+          echo "=== Bắt đầu biên dịch Xcode Archive (Unsigned) ==="
+          xcodebuild \
+            -project iosApp.xcodeproj \
+            -scheme iosApp \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/Nuvio.xcarchive \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES
+
+      - name: Đóng gói thành file Unsigned IPA
+        script: |
+          echo "=== Đóng gói IPA ==="
+          mkdir -p build/Payload
+          cp -r build/Nuvio.xcarchive/Products/Applications/Nuvio.app build/Payload/
+          cd build
+          zip -qr Nuvio-unsigned.ipa Payload
+          echo "=== Đã tạo thành công Nuvio-unsigned.ipa ==="
+          ls -lh Nuvio-unsigned.ipa
+
+    artifacts:
+      - build/*.ipa
+      - build/*.xcarchive
