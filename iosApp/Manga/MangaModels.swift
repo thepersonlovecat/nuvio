@@ -116,3 +116,83 @@ public enum ReadingMode: String, CaseIterable, Identifiable {
         }
     }
 }
+
+// MARK: - Manga Add-on Type
+public enum MangaAddonType: String, Codable, CaseIterable {
+    case builtInRest = "built_in"
+    case providerZJson = "provider_z_json"
+    case customRest = "custom_rest"
+
+    public var displayName: String {
+        switch self {
+        case .builtInRest: return "Nguồn tích hợp"
+        case .providerZJson: return "Provider-Z"
+        case .customRest: return "REST API"
+        }
+    }
+}
+
+// MARK: - Manga Add-on Definition
+public struct MangaAddon: Identifiable, Codable, Hashable {
+    public let id: String
+    public var name: String
+    public var version: String
+    public var description: String
+    public var baseUrl: String
+    public var iconUrl: String?
+    public var manifestUrl: String?
+    public var type: MangaAddonType
+    public var isEnabled: Bool
+    public var isBuiltIn: Bool
+
+    public init(
+        id: String,
+        name: String,
+        version: String = "1.0.0",
+        description: String = "",
+        baseUrl: String,
+        iconUrl: String? = nil,
+        manifestUrl: String? = nil,
+        type: MangaAddonType = .builtInRest,
+        isEnabled: Bool = true,
+        isBuiltIn: Bool = false
+    ) {
+        self.id = id
+        self.name = name
+        self.version = version
+        self.description = description
+        self.baseUrl = baseUrl
+        self.iconUrl = iconUrl
+        self.manifestUrl = manifestUrl
+        self.type = type
+        self.isEnabled = isEnabled
+        self.isBuiltIn = isBuiltIn
+    }
+}
+
+// MARK: - Add-on Manifest DTO (For remote installation via JSON URL)
+public struct MangaAddonManifest: Codable {
+    public let id: String
+    public let name: String
+    public let version: String?
+    public let description: String?
+    public let baseUrl: String?
+    public let icon: String?
+    public let type: String?
+
+    public func toAddon(manifestUrl: String) -> MangaAddon {
+        MangaAddon(
+            id: id,
+            name: name,
+            version: version ?? "1.0.0",
+            description: description ?? "",
+            baseUrl: baseUrl ?? manifestUrl,
+            iconUrl: icon,
+            manifestUrl: manifestUrl,
+            type: .providerZJson,
+            isEnabled: true,
+            isBuiltIn: false
+        )
+    }
+}
+

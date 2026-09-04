@@ -10,8 +10,10 @@ public final class MangaCatalogViewModel: ObservableObject {
     @Published public var selectedManga: MangaItem? = nil
     @Published public var isLoadingDetail: Bool = false
     @Published public var activeReadingSession: MangaReadingSession? = nil
+    @Published public var showAddonsSheet: Bool = false
 
     private let bridge = ProviderZBridge.shared
+    private let addonManager = MangaAddonManager.shared
 
     public init() {
         Task {
@@ -21,13 +23,13 @@ public final class MangaCatalogViewModel: ObservableObject {
 
     public func loadCatalog() async {
         isLoading = true
-        mangaList = await bridge.fetchHomeManga()
+        mangaList = await bridge.fetchHomeManga(addon: addonManager.activeAddon)
         isLoading = false
     }
 
     public func search() async {
         isLoading = true
-        mangaList = await bridge.searchManga(query: searchText)
+        mangaList = await bridge.searchManga(query: searchText, addon: addonManager.activeAddon)
         isLoading = false
     }
 
@@ -35,7 +37,7 @@ public final class MangaCatalogViewModel: ObservableObject {
         selectedManga = item
         isLoadingDetail = true
         Task {
-            let detailed = await bridge.fetchDetail(for: item)
+            let detailed = await bridge.fetchDetail(for: item, addon: addonManager.activeAddon)
             self.selectedManga = detailed
             self.isLoadingDetail = false
         }
@@ -180,42 +182,43 @@ struct MangaDetailSheet: View {
                             if isLoadingDetail {
                                 ProgressView()
                                     .tint(.red)
+                                    .scaleEffect(0.8)
                             }
                         }
 
                         if let chapters = manga.chapters, !chapters.isEmpty {
                             LazyVStack(spacing: 8) {
-                                ForEach(chapters) { chapter in
+                                ForEach(chapters) { ch in
                                     Button(action: {
-                                        onSelectChapter(chapter)
+                                        onSelectChapter(ch)
                                     }) {
                                         HStack {
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                Text(chapter.title)
-                                                    .font(.subheadline.weight(.medium))
-                                                    .foregroundColor(.white)
-                                                if let date = chapter.date {
-                                                    Text(date)
-                                                        .font(.caption2)
-                                                        .foregroundColor(.gray)
-                                                }
-                                            }
+                                            Text(ch.title)
+                                                .font(.subheadline)
+                                                .foregroundColor(.white)
+                                                .lineLimit(1)
                                             Spacer()
-                                            Image(systemName: "book.fill")
+                                            if let date = ch.date {
+                                                Text(date)
+                                                    .font(.caption2)
+                                                    .foregroundColor(.gray)
+                                            }
+                                            Image(systemName: "chevron.right")
                                                 .font(.caption)
-                                                .foregroundColor(.red)
+                                                .foregroundColor(.gray)
                                         }
-                                        .padding(.horizontal, 14)
-                                        .padding(.vertical, 12)
-                                        .background(Color.white.opacity(0.05))
-                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                                        .padding(.vertical, 10)
+                                        .padding(.horizontal, 12)
+                                        .background(Color.white.opacity(0.06))
+                                        .clipShape(RoundedRectangle(cornerRadius: 6))
                                     }
                                 }
                             }
                         } else if !isLoadingDetail {
-                            Text("Chưa có danh sách chương.")
-                                .font(.footnote)
+                            Text("Không có dữ liệu chương.")
+                                .font(.caption)
                                 .foregroundColor(.gray)
+                                .padding(.vertical, 10)
                         }
                     }
                 }
@@ -238,6 +241,7 @@ struct MangaDetailSheet: View {
 // MARK: - Main Manga Catalog View
 public struct MangaCatalogView: View {
     @StateObject private var viewModel = MangaCatalogViewModel()
+    @ObservedObject private var addonManager = MangaAddonManager.shared
 
     private let columns = [
         GridItem(.flexible(), spacing: 14),
@@ -257,7 +261,7 @@ public struct MangaCatalogView: View {
                         HStack {
                             Image(systemName: "magnifyingglass")
                                 .foregroundColor(.gray)
-                            TextField("Tìm truyện tranh...", text: $viewModel.searchText)
+                            TextField("Tìm truyện trên \(addonManager.activeAddon.name)...", text: $viewModel.searchText)
                                 .foregroundColor(.white)
                                 .onSubmit {
                                     Task { await viewModel.search() }
@@ -277,19 +281,55 @@ public struct MangaCatalogView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                         .padding(.horizontal, 16)
 
-                        // Tiêu đề danh mục
-                        HStack {
+                        // Tiêu đề danh mục + Bộ chọn nguồn Add-on nhanh
+                        HStack(alignment: .center) {
                             Text(viewModel.searchText.isEmpty ? "Truyện mới cập nhật" : "Kết quả tìm kiếm")
                                 .font(.title3.bold())
                                 .foregroundColor(.white)
+
                             Spacer()
-                            Text("Provider-Z")
-                                .font(.caption.bold())
-                                .foregroundColor(.red)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(Color.red.opacity(0.15))
+
+                            // Menu chuyển đổi nguồn Add-on
+                            Menu {
+                                Section("Nguồn truyện đang bật") {
+                                    ForEach(addonManager.addons.filter { $0.isEnabled }) { addon in
+                                        Button {
+                                            addonManager.selectAddon(id: addon.id)
+                                            Task { await viewModel.loadCatalog() }
+                                        } label: {
+                                            HStack {
+                                                Text(addon.name)
+                                                if addon.id == addonManager.activeAddonId {
+                                                    Image(systemName: "checkmark")
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Divider()
+
+                                Button {
+                                    viewModel.showAddonsSheet = true
+                                } label: {
+                                    Label("Quản lý Add-on...", systemImage: "puzzlepiece.extension")
+                                }
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "puzzlepiece.extension.fill")
+                                        .font(.system(size: 11))
+                                    Text(addonManager.activeAddon.name)
+                                        .font(.system(size: 12, weight: .bold))
+                                        .lineLimit(1)
+                                    Image(systemName: "chevron.down")
+                                        .font(.system(size: 9, weight: .semibold))
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(Color(red: 139/255, green: 92/255, blue: 246/255).opacity(0.18))
+                                .foregroundColor(Color(red: 167/255, green: 139/255, blue: 250/255))
                                 .clipShape(Capsule())
+                            }
                         }
                         .padding(.horizontal, 16)
 
@@ -297,8 +337,8 @@ public struct MangaCatalogView: View {
                         if viewModel.isLoading {
                             VStack {
                                 Spacer(minLength: 80)
-                                ProgressView().tint(.red).scaleEffect(1.2)
-                                Text("Đang tải danh sách truyện...")
+                                ProgressView().tint(.purple).scaleEffect(1.2)
+                                Text("Đang tải từ \(addonManager.activeAddon.name)...")
                                     .font(.caption)
                                     .foregroundColor(.gray)
                                     .padding(.top, 8)
@@ -313,6 +353,12 @@ public struct MangaCatalogView: View {
                                     .foregroundColor(.gray)
                                 Text("Không tìm thấy truyện phù hợp")
                                     .foregroundColor(.gray)
+                                Button("Tải lại") {
+                                    Task { await viewModel.loadCatalog() }
+                                }
+                                .font(.caption.bold())
+                                .foregroundColor(Color(red: 167/255, green: 139/255, blue: 250/255))
+                                .padding(.top, 6)
                                 Spacer()
                             }
                             .frame(maxWidth: .infinity)
@@ -323,7 +369,7 @@ public struct MangaCatalogView: View {
                                         .onTapGesture {
                                             viewModel.selectManga(item)
                                         }
-                                }
+                                    }
                             }
                             .padding(.horizontal, 16)
                             .padding(.bottom, 30)
@@ -334,6 +380,22 @@ public struct MangaCatalogView: View {
             }
             .navigationTitle("Truyện Tranh")
             .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        viewModel.showAddonsSheet = true
+                    } label: {
+                        Image(systemName: "puzzlepiece.extension")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(Color(red: 167/255, green: 139/255, blue: 250/255))
+                    }
+                }
+            }
+            .sheet(isPresented: $viewModel.showAddonsSheet, onDismiss: {
+                Task { await viewModel.loadCatalog() }
+            }) {
+                MangaAddonsView()
+            }
             .sheet(item: $viewModel.selectedManga) { manga in
                 MangaDetailSheet(
                     manga: manga,
