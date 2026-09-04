@@ -30,8 +30,6 @@ public final class MangaCatalogViewModel: ObservableObject {
     @Published public var mangaList: [MangaItem] = []
     @Published public var searchText: String = ""
     @Published public var isLoading: Bool = false
-    @Published public var selectedManga: MangaItem? = nil
-    @Published public var isLoadingDetail: Bool = false
     @Published public var activeReadingSession: MangaReadingSession? = nil
     @Published public var showAddonsSheet: Bool = false
     @Published public var sourceStatus: MangaSourceStatus = .idle
@@ -41,6 +39,8 @@ public final class MangaCatalogViewModel: ObservableObject {
     @Published public var canLoadMore: Bool = false
     /// Lọc theo thể loại (áp dụng trên kết quả đã tải)
     @Published public var selectedGenre: String? = nil
+    /// Ngăn xếp điều hướng chuẩn iOS 16+
+    @Published public var navPath = NavigationPath()
 
     private let bridge = ProviderZBridge.shared
     private let addonManager = MangaAddonManager.shared
@@ -170,27 +170,11 @@ public final class MangaCatalogViewModel: ObservableObject {
     }
 
     public func selectManga(_ item: MangaItem) {
-        selectedManga = item
-        isLoadingDetail = true
-        Task {
-            let detailed = await bridge.fetchDetail(for: item, addon: addonManager.activeAddon)
-            self.libraryStore.refresh(detailed)
-            self.selectedManga = detailed
-            self.isLoadingDetail = false
-        }
+        navPath.append(item)
     }
 
-    public func startReading(_ chapter: MangaChapter) {
-        guard let manga = selectedManga else { return }
-
-        // A view controller cannot reliably present a full-screen cover while
-        // it is already presenting the detail sheet. Dismiss first, then open
-        // the reader after the sheet's dismissal animation has completed.
-        let session = MangaReadingSession(manga: manga, chapter: chapter)
-        selectedManga = nil
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-            self?.activeReadingSession = session
-        }
+    public func startReading(_ chapter: MangaChapter, manga: MangaItem) {
+        activeReadingSession = MangaReadingSession(manga: manga, chapter: chapter)
     }
 
     public func resume(_ progress: MangaReadingProgress) {
@@ -202,16 +186,7 @@ public final class MangaCatalogViewModel: ObservableObject {
     }
 
     public func openFollowed(_ followed: MangaFollowedSeries) {
-        let addon = addonManager.addons.first(where: { $0.id == followed.addonID })
-            ?? addonManager.activeAddon
-        selectedManga = followed.sourceManga
-        isLoadingDetail = true
-        Task {
-            let detailed = await bridge.fetchDetail(for: followed.sourceManga, addon: addon)
-            libraryStore.refresh(detailed)
-            selectedManga = detailed
-            isLoadingDetail = false
-        }
+        navPath.append(followed.sourceManga)
     }
 }
 
@@ -544,191 +519,7 @@ struct MangaReadingHistoryCard: View {
     }
 }
 
-// MARK: - Manga Detail Sheet
-struct MangaDetailSheet: View {
-    let manga: MangaItem
-    let isLoadingDetail: Bool
-    let onSelectChapter: (MangaChapter) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var showChapterPicker = false
-    @ObservedObject private var libraryStore = MangaLibraryStore.shared
 
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    // Header (Cover + Info)
-                    HStack(alignment: .top, spacing: 16) {
-                        MangaCoverImageView(urlString: manga.displayCover)
-                        .frame(width: 110, height: 160)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(manga.title)
-                                .font(.title3.bold())
-                                .foregroundColor(.white)
-
-                            if let authors = manga.authors, !authors.isEmpty {
-                                Text("Tác giả: \(authors.joined(separator: ", "))")
-                                    .font(.caption)
-                                    .foregroundColor(.gray)
-                            }
-
-                            if let status = manga.status {
-                                Text("Trạng thái: \(status)")
-                                    .font(.caption)
-                                    .foregroundColor(.red)
-                            }
-
-                            if let genres = manga.genres, !genres.isEmpty {
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: 6) {
-                                        ForEach(genres, id: \.self) { genre in
-                                            Text(genre)
-                                                .font(.caption2)
-                                                .padding(.horizontal, 8)
-                                                .padding(.vertical, 4)
-                                                .background(Color.white.opacity(0.1))
-                                                .clipShape(Capsule())
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Tóm tắt truyện
-                    if let desc = manga.description, !desc.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Nội dung")
-                                .font(.headline)
-                                .foregroundColor(.white)
-                            Text(desc)
-                                .font(.footnote)
-                                .foregroundColor(.gray)
-                                .lineLimit(5)
-                        }
-                    }
-
-                    Button {
-                        if libraryStore.isFollowing(mangaID: manga.id) {
-                            libraryStore.unfollow(mangaID: manga.id)
-                        } else {
-                            libraryStore.follow(manga, addonID: MangaAddonManager.shared.activeAddon?.id ?? "")
-                        }
-                    } label: {
-                        let isFollowing = libraryStore.isFollowing(mangaID: manga.id)
-                        Label(
-                            isFollowing ? "Đang theo dõi" : "Theo dõi truyện",
-                            systemImage: isFollowing ? "checkmark.circle.fill" : "plus.circle"
-                        )
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 11)
-                        .background(isFollowing ? Color.green.opacity(0.20) : Color.purple.opacity(0.22))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }
-                    .foregroundColor(.white)
-
-                    Divider().background(Color.white.opacity(0.1))
-
-                    // Danh sách Chapter
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Text("Danh sách chương")
-                                .font(.headline)
-                                .foregroundColor(.white)
-                            Spacer()
-                            if isLoadingDetail {
-                                ProgressView()
-                                    .tint(.red)
-                                    .scaleEffect(0.8)
-                            }
-                        }
-
-                        if let chapters = manga.chapters, !chapters.isEmpty {
-                            LazyVStack(spacing: 8) {
-                                ForEach(chapters.prefix(5)) { ch in
-                                    Button(action: {
-                                        onSelectChapter(ch)
-                                    }) {
-                                        HStack {
-                                            Text(ch.title)
-                                                .font(.subheadline)
-                                                .foregroundColor(.white)
-                                                .lineLimit(1)
-                                            Spacer()
-                                            if let date = ch.date {
-                                                Text(date)
-                                                    .font(.caption2)
-                                                    .foregroundColor(.gray)
-                                            }
-                                            Image(systemName: "chevron.right")
-                                                .font(.caption)
-                                                .foregroundColor(.gray)
-                                        }
-                                        .padding(.vertical, 10)
-                                        .padding(.horizontal, 12)
-                                        .background(Color.white.opacity(0.06))
-                                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                                    }
-                                }
-                            }
-
-                            Button {
-                                showChapterPicker = true
-                            } label: {
-                                Label("Xem và chọn tất cả \(chapters.count) chương", systemImage: "list.number")
-                                    .font(.subheadline.weight(.semibold))
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 11)
-                                    .background(Color.purple.opacity(0.22))
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                            }
-                            .foregroundColor(.white)
-                        } else if !isLoadingDetail {
-                            Text("Không có dữ liệu chương.")
-                                .font(.caption)
-                                .foregroundColor(.gray)
-                                .padding(.vertical, 10)
-                        }
-                    }
-                }
-                .padding(18)
-            }
-            .background(Color(red: 0.07, green: 0.07, blue: 0.07).ignoresSafeArea())
-            .navigationTitle("Chi tiết truyện")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Đóng") { dismiss() }
-                        .foregroundColor(.red)
-                }
-            }
-        }
-        .preferredColorScheme(.dark)
-        .sheet(isPresented: $showChapterPicker) {
-            if let chapters = manga.chapters {
-                MangaChapterPickerView(
-                    chapters: chapters,
-                    readChapterIDs: libraryStore.readChapterIDs(mangaID: manga.id),
-                    onSelectChapter: { chapter in
-                        showChapterPicker = false
-                        // Let the picker dismiss before the detail sheet closes and
-                        // MangaCatalogView presents the reader.
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                            onSelectChapter(chapter)
-                        }
-                    },
-                    onMarkAllRead: {
-                        libraryStore.markAllRead(mangaID: manga.id, chapters: chapters)
-                    }
-                )
-                .presentationDetents([.large])
-            }
-        }
-    }
-}
 
 // MARK: - Main Manga Catalog View
 public struct MangaCatalogView: View {
@@ -764,7 +555,7 @@ public struct MangaCatalogView: View {
     }
 
     public var body: some View {
-        NavigationStack {
+        NavigationStack(path: $viewModel.navPath) {
             ZStack {
                 Color(red: 0.051, green: 0.051, blue: 0.051).ignoresSafeArea()
 
@@ -1079,14 +870,10 @@ public struct MangaCatalogView: View {
             }) {
                 MangaAddonsView()
             }
-            .sheet(item: $viewModel.selectedManga) { manga in
-                MangaDetailSheet(
-                    manga: manga,
-                    isLoadingDetail: viewModel.isLoadingDetail,
-                    onSelectChapter: { chapter in
-                        viewModel.startReading(chapter)
-                    }
-                )
+            .navigationDestination(for: MangaItem.self) { manga in
+                MangaDetailView(manga: manga) { chapter, detailedManga in
+                    viewModel.startReading(chapter, manga: detailedManga)
+                }
             }
             .fullScreenCover(item: $viewModel.activeReadingSession) { session in
                 MangaReaderView(
