@@ -42,8 +42,49 @@ workflows:
           touch ../local.properties
           touch local.properties
 
-          echo "Cấu hình triệt để RAM 5GB cho Gradle và Kotlin/Native Linker..."
-          python3 -c "p='../gradle.properties'; lines=[l for l in open(p).read().splitlines() if not l.startswith('org.gradle.jvmargs') and not l.startswith('kotlin.daemon') and not l.startswith('kotlin.native.jvmArgs')]; lines.append('org.gradle.jvmargs=-Xmx5120m -XX:+UseG1GC -XX:MaxMetaspaceSize=1024m'); lines.append('kotlin.daemon.jvmargs=-Xmx5120m'); lines.append('kotlin.native.jvmArgs=-Xmx5120m'); open(p,'w').write('\n'.join(lines)+'\n')"
+          echo "Vô hiệu hóa pha DevirtualizationAnalysis và LTO gây OOM trong Kotlin/Native..."
+          python3 << 'EOF'
+          path = '../composeApp/build.gradle.kts'
+          with open(path, 'r', encoding='utf-8') as f:
+              content = f.read()
+
+          target = 'freeCompilerArgs += listOf("-Xbinary=bundleId=$iosFrameworkBundleId")'
+          replacement = 'freeCompilerArgs += listOf("-Xbinary=bundleId=$iosFrameworkBundleId", "-Xdisable-phases=DevirtualizationAnalysis")'
+
+          if target in content:
+              content = content.replace(target, replacement)
+              with open(path, 'w', encoding='utf-8') as f:
+                  f.write(content)
+              print("==> Đã vá thành công composeApp/build.gradle.kts (-Xdisable-phases=DevirtualizationAnalysis)")
+          else:
+              print("==> CẢNH BÁO: Không tìm thấy target trong composeApp/build.gradle.kts!")
+          EOF
+
+          echo "Cấu hình triệt để 6GB RAM và tắt LTO cho Gradle & Kotlin/Native..."
+          python3 << 'EOF'
+          path = '../gradle.properties'
+          with open(path, 'r', encoding='utf-8') as f:
+              lines = f.read().splitlines()
+
+          filtered = [l for l in lines if not any(l.startswith(k) for k in [
+              'org.gradle.jvmargs',
+              'kotlin.daemon.jvmargs',
+              'kotlin.native.jvmargs',
+              'kotlin.native.jvmArgs',
+              'kotlin.native.binary.lto',
+              'kotlin.native.cacheKind'
+          ])]
+
+          filtered.append('org.gradle.jvmargs=-Xmx6144m -XX:+UseG1GC -XX:MaxMetaspaceSize=1024m')
+          filtered.append('kotlin.daemon.jvmargs=-Xmx6144m')
+          filtered.append('kotlin.native.jvmargs=-Xmx6144m')
+          filtered.append('kotlin.native.binary.lto=none')
+          filtered.append('kotlin.native.cacheKind=none')
+
+          with open(path, 'w', encoding='utf-8') as f:
+              f.write('\n'.join(filtered) + '\n')
+          print("==> Đã cập nhật xong gradle.properties")
+          EOF
           
           # Đồng bộ sang cả ~/.gradle/gradle.properties toàn cục
           mkdir -p ~/.gradle
@@ -63,9 +104,9 @@ workflows:
           fi
           export PATH="$JAVA_HOME/bin:$PATH"
 
-          # Thiết lập biến môi trường cấp phát 5GB RAM tối ưu cho Mac mini
-          export GRADLE_OPTS="-Xmx5120M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1024m"
-          export KOTLIN_DAEMON_JVMARGS="-Xmx5120M"
+          # Thiết lập biến môi trường cấp phát 6GB RAM tối ưu cho Mac mini
+          export GRADLE_OPTS="-Xmx6144M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1024m"
+          export KOTLIN_DAEMON_JVMARGS="-Xmx6144M"
 
           xcodebuild \
             -project iosApp.xcodeproj \
