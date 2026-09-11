@@ -31,6 +31,11 @@ final class MangaImageLoader {
         session = URLSession(configuration: config)
     }
 
+    func clearCache() {
+        memoryCache.removeAllObjects()
+        session.configuration.urlCache?.removeAllCachedResponses()
+    }
+
     func image(for page: MangaPage) async throws -> UIImage {
         try await image(urlString: page.url, headers: page.headers)
     }

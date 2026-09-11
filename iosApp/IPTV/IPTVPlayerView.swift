@@ -38,6 +38,7 @@ final class IPTVSurfaceHostController: UIViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        IPTVPiPCoordinator.shared.configure(sourceView: view)
         if !hasStartedInitialLoad {
             hasStartedInitialLoad = true
             loadChannel(channel)
@@ -86,6 +87,7 @@ public struct IPTVPlayerView: View {
     @Environment(\.dismiss) private var dismiss
 
     @ObservedObject var store = IPTVPlaylistStore.shared
+    @ObservedObject private var pipCoordinator = IPTVPiPCoordinator.shared
     @State public var currentChannel: IPTVChannel
     public let playlistChannels: [IPTVChannel]
 
@@ -274,6 +276,19 @@ public struct IPTVPlayerView: View {
                 }
 
                 Spacer()
+
+                // Picture-in-Picture Button
+                if pipCoordinator.isPiPSupported {
+                    Button {
+                        pipCoordinator.togglePiP()
+                    } label: {
+                        Image(systemName: pipCoordinator.isPiPActive ? "pip.exit" : "pip.enter")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(pipCoordinator.isPiPActive ? .cyan : .white)
+                            .frame(width: 40, height: 40)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                }
 
                 // Lock Landscape Toggle
                 Button {

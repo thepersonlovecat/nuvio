@@ -9,6 +9,7 @@ public struct IPTVCatalogView: View {
     @State private var selectedChannelForPlayback: IPTVChannel? = nil
     @State private var showPlaylistManager: Bool = false
     @State private var showAddPlaylistSheet: Bool = false
+    @State private var showStorageCleaner: Bool = false
 
     // File Importer State
     @State private var showFileImporter: Bool = false
@@ -76,6 +77,9 @@ public struct IPTVCatalogView: View {
         }
         .sheet(isPresented: $showAddPlaylistSheet) {
             AddPlaylistSheetView(isPresented: $showAddPlaylistSheet, showFileImporter: $showFileImporter)
+        }
+        .sheet(isPresented: $showStorageCleaner) {
+            StorageCleanerView()
         }
         .fileImporter(
             isPresented: $showFileImporter,
@@ -209,6 +213,17 @@ public struct IPTVCatalogView: View {
                         .frame(width: 36, height: 36)
                         .background(Color.white.opacity(0.08), in: Circle())
                 }
+            }
+
+            // Storage Cleaner
+            Button {
+                showStorageCleaner = true
+            } label: {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.cyan)
+                    .frame(width: 36, height: 36)
+                    .background(Color.cyan.opacity(0.12), in: Circle())
             }
 
             // Playlist Manager
