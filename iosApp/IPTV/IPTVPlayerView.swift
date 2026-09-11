@@ -6,17 +6,17 @@ import AVFoundation
 
 struct MPVPlayerRepresentable: UIViewControllerRepresentable {
     let playerVC: MPVPlayerViewController
+    let targetSize: CGSize
 
     func makeUIViewController(context: Context) -> MPVPlayerViewController {
         playerVC.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        playerVC.syncVideoSurfaceLayout(size: targetSize)
         return playerVC
     }
 
     func updateUIViewController(_ uiViewController: MPVPlayerViewController, context: Context) {
         uiViewController.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        DispatchQueue.main.async {
-            uiViewController.syncVideoSurfaceLayout()
-        }
+        uiViewController.syncVideoSurfaceLayout(size: targetSize)
     }
 }
 
@@ -73,13 +73,24 @@ public struct IPTVPlayerView: View {
         }
     }
 
+    private var windowSafeAreaInsets: UIEdgeInsets {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let window = scenes.flatMap(\.windows).first(where: { $0.isKeyWindow }) ?? scenes.first?.windows.first
+        return window?.safeAreaInsets ?? .zero
+    }
+
+    private var safeAreaTop: CGFloat {
+        let top = windowSafeAreaInsets.top
+        return top > 0 ? top : 47
+    }
+
     private func inlineRect(for geometry: GeometryProxy) -> CGRect {
         if portraitPlaceholderFrame.width > 0 && portraitPlaceholderFrame.height > 0 {
             return portraitPlaceholderFrame
         }
         let w = max(geometry.size.width - 24, 100)
         let h = w * 9 / 16
-        let topY = geometry.safeAreaInsets.top + 54
+        let topY = safeAreaTop + 56
         return CGRect(x: 12, y: topY, width: w, height: h)
     }
 
@@ -87,6 +98,21 @@ public struct IPTVPlayerView: View {
         GeometryReader { geometry in
             let isLandscape = geometry.size.width > geometry.size.height
             let isCinema = isFullscreen || isLandscape
+
+            let rect = inlineRect(for: geometry)
+            let panelSize: CGSize = {
+                if isCinema {
+                    if isLandscape {
+                        return geometry.size
+                    } else {
+                        let w = max(geometry.size.width, geometry.size.height)
+                        let h = min(geometry.size.width, geometry.size.height)
+                        return CGSize(width: w, height: h)
+                    }
+                } else {
+                    return rect.size
+                }
+            }()
 
             ZStack(alignment: .topLeading) {
                 Color(red: 0.06, green: 0.06, blue: 0.07).ignoresSafeArea()
@@ -122,20 +148,12 @@ public struct IPTVPlayerView: View {
                 .allowsHitTesting(!isCinema)
 
                 // 2. Video Panel: Render trực tiếp tại ZStack gốc (KHÔNG BAO GIỜ bị unmount/recreate)
-                let rect = inlineRect(for: geometry)
-                let cinemaWidth = max(geometry.size.width, geometry.size.height)
-                let cinemaHeight = min(geometry.size.width, geometry.size.height)
-                videoPanel(isCinema: isCinema)
-                    .frame(
-                        width: isCinema ? cinemaWidth : rect.width,
-                        height: isCinema ? cinemaHeight : rect.height
-                    )
+                videoPanel(isCinema: isCinema, size: panelSize)
                     .position(
                         isCinema
                             ? CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
                             : CGPoint(x: rect.midX, y: rect.midY)
                     )
-                    .ignoresSafeArea(isCinema ? .all : [])
                     .shadow(color: isCinema ? .clear : .black.opacity(0.35), radius: 8, y: 4)
                     .zIndex(10)
 
@@ -146,15 +164,26 @@ public struct IPTVPlayerView: View {
                 }
             }
             .coordinateSpace(name: "iptvRoot")
-            .onChange(of: isFullscreen) { _ in
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    playerVC.syncVideoSurfaceLayout()
+            .onChange(of: isFullscreen) { isFull in
+                let target: CGSize
+                if isFull {
+                    let w = max(geometry.size.width, geometry.size.height)
+                    let h = min(geometry.size.width, geometry.size.height)
+                    target = CGSize(width: w, height: h)
+                } else {
+                    target = rect.size
                 }
+                playerVC.syncVideoSurfaceLayout(size: target)
             }
-            .onChange(of: geometry.size) { _ in
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    playerVC.syncVideoSurfaceLayout()
+            .onChange(of: geometry.size) { newSize in
+                let isLand = newSize.width > newSize.height
+                let target: CGSize
+                if isFullscreen || isLand {
+                    target = isLand ? newSize : CGSize(width: max(newSize.width, newSize.height), height: min(newSize.width, newSize.height))
+                } else {
+                    target = rect.size
                 }
+                playerVC.syncVideoSurfaceLayout(size: target)
             }
         }
         .ignoresSafeArea()
@@ -174,16 +203,17 @@ public struct IPTVPlayerView: View {
 
     // MARK: - Video Panel (Always Mounted)
 
-    private func videoPanel(isCinema: Bool) -> some View {
+    private func videoPanel(isCinema: Bool, size: CGSize) -> some View {
         ZStack {
-            MPVPlayerRepresentable(playerVC: playerVC)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            MPVPlayerRepresentable(playerVC: playerVC, targetSize: size)
+                .frame(width: size.width, height: size.height)
 
             // Inline controls overlay
             if !isCinema {
                 inlineControlsOverlay
             }
         }
+        .frame(width: size.width, height: size.height)
         .background(Color.black)
         .clipShape(RoundedRectangle(cornerRadius: isCinema ? 0 : 12))
         .overlay(
@@ -308,7 +338,7 @@ public struct IPTVPlayerView: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.top, max(geometry.safeAreaInsets.top, 10))
+        .padding(.top, safeAreaTop + 6)
         .padding(.bottom, 8)
     }
 
@@ -516,8 +546,9 @@ public struct IPTVPlayerView: View {
                                 .background(.ultraThinMaterial, in: Circle())
                         }
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 14)
+                    .padding(.leading, max(windowSafeAreaInsets.left, 20))
+                    .padding(.trailing, max(windowSafeAreaInsets.right, 20))
+                    .padding(.top, max(windowSafeAreaInsets.top, 14))
 
                     Spacer()
 
@@ -575,8 +606,9 @@ public struct IPTVPlayerView: View {
                                 .background(.ultraThinMaterial, in: Circle())
                         }
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 20)
+                    .padding(.leading, max(windowSafeAreaInsets.left, 24))
+                    .padding(.trailing, max(windowSafeAreaInsets.right, 24))
+                    .padding(.bottom, max(windowSafeAreaInsets.bottom, 16))
                 }
                 .transition(.opacity)
             }

@@ -372,7 +372,7 @@ final class MPVPlayerViewController: UIViewController {
         coordinator.animate(alongsideTransition: { [weak self] _ in
             self?.syncVideoSurfaceLayoutNow(size: size, scheduleDeferredPasses: false)
         }, completion: { [weak self] _ in
-            self?.syncVideoSurfaceLayout()
+            self?.syncVideoSurfaceLayout(size: size)
             self?.attemptStartPendingLoad()
         })
     }
