@@ -7,10 +7,10 @@ public final class IPTVPlaylistStore: ObservableObject {
 
     public static let shared = IPTVPlaylistStore()
 
-    private let storageFileName = "nuvio_iptv_playlists_v1.json"
+    private let storageFileName = "nuvio_iptv_playlists_v2.json"
     private let favoritesKey = "nuvio_iptv_favorites_v1"
     private let recentsKey = "nuvio_iptv_recents_v1"
-    private let activePlaylistIdKey = "nuvio_iptv_active_id_v1"
+    private let activePlaylistIdKey = "nuvio_iptv_active_id_v2"
 
     @Published public var playlists: [IPTVPlaylist] = []
     @Published public var activePlaylistId: String? = nil
@@ -24,22 +24,18 @@ public final class IPTVPlaylistStore: ObservableObject {
         loadRecents()
         loadPlaylists()
 
-        // Nếu chưa có playlist nào, tạo playlist mẫu mặc định
-        if playlists.isEmpty {
-            createDefaultSamplePlaylist()
-        }
+        // Xóa sạch kênh mẫu cũ nếu có
+        playlists.removeAll { $0.id == "builtin_vietnam_essential" }
 
         if activePlaylistId == nil || !playlists.contains(where: { $0.id == activePlaylistId }) {
             activePlaylistId = playlists.first?.id
         }
     }
 
-    /// Playlist đang được kích hoạt hiển thị
     public var activePlaylist: IPTVPlaylist? {
         playlists.first(where: { $0.id == activePlaylistId }) ?? playlists.first
     }
 
-    /// Tất cả kênh của playlist hiện tại
     public var currentChannels: [IPTVChannel] {
         activePlaylist?.channels ?? []
     }
@@ -51,52 +47,222 @@ public final class IPTVPlaylistStore: ObservableObject {
         UserDefaults.standard.set(id, forKey: activePlaylistIdKey)
     }
 
-    public func addPlaylist(name: String, url: String) async -> Bool {
+    // 1. Thêm M3U Link
+    public func addM3UPlaylist(name: String, url: String) async -> Bool {
         isLoading = true
         errorMessage = nil
 
         do {
             let channels = try await IPTVParser.shared.fetchAndParse(from: url)
             guard !channels.isEmpty else {
-                errorMessage = "Không tìm thấy kênh nào trong danh sách phát này."
+                errorMessage = "Không tìm thấy kênh nào trong danh sách phát M3U này."
                 isLoading = false
                 return false
             }
 
-            let newPlaylist = IPTVPlaylist(
+            let playlist = IPTVPlaylist(
                 id: UUID().uuidString,
-                name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Danh sách mới" : name,
+                name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Danh sách M3U" : name,
+                type: .m3u,
                 url: url,
                 channels: channels,
-                lastUpdated: Date(),
-                isBuiltIn: false
+                lastUpdated: Date()
             )
 
-            playlists.append(newPlaylist)
-            activePlaylistId = newPlaylist.id
-            UserDefaults.standard.set(newPlaylist.id, forKey: activePlaylistIdKey)
+            playlists.append(playlist)
+            selectPlaylist(id: playlist.id)
             persistPlaylists()
             isLoading = false
             return true
         } catch {
-            errorMessage = "Lỗi tải playlist: \(error.localizedDescription)"
+            errorMessage = "Lỗi tải M3U: \(error.localizedDescription)"
             isLoading = false
             return false
         }
     }
 
+    // 2. Thêm File M3U Local từ máy
+    public func addLocalFilePlaylist(name: String, sourceURL: URL) async -> Bool {
+        isLoading = true
+        errorMessage = nil
+
+        guard sourceURL.startAccessingSecurityScopedResource() else {
+            errorMessage = "Không có quyền truy cập file đã chọn."
+            isLoading = false
+            return false
+        }
+        defer { sourceURL.stopAccessingSecurityScopedResource() }
+
+        do {
+            let data = try Data(contentsOf: sourceURL)
+            guard let content = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .ascii) else {
+                errorMessage = "Không thể đọc nội dung file văn bản."
+                isLoading = false
+                return false
+            }
+
+            let channels = IPTVParser.shared.parse(m3uContent: content)
+            guard !channels.isEmpty else {
+                errorMessage = "File không chứa bất kỳ kênh hợp lệ nào."
+                isLoading = false
+                return false
+            }
+
+            // Lưu bản sao vào thư mục Documents của App
+            let localFileName = "\(UUID().uuidString)_\(sourceURL.lastPathComponent)"
+            let destURL = documentsDirectory.appendingPathComponent(localFileName)
+            try data.write(to: destURL, options: .atomic)
+
+            let playlist = IPTVPlaylist(
+                id: UUID().uuidString,
+                name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? sourceURL.deletingPathExtension().lastPathComponent : name,
+                type: .localFile,
+                url: destURL.path,
+                channels: channels,
+                lastUpdated: Date(),
+                localFileName: localFileName
+            )
+
+            playlists.append(playlist)
+            selectPlaylist(id: playlist.id)
+            persistPlaylists()
+            isLoading = false
+            return true
+        } catch {
+            errorMessage = "Lỗi nạp file: \(error.localizedDescription)"
+            isLoading = false
+            return false
+        }
+    }
+
+    // 3. Thêm Xtream Codes
+    public func addXtreamPlaylist(name: String, server: String, user: String, pass: String) async -> Bool {
+        isLoading = true
+        errorMessage = nil
+
+        do {
+            let channels = try await IPTVParser.shared.fetchXtreamChannels(server: server, user: user, pass: pass)
+            guard !channels.isEmpty else {
+                errorMessage = "Máy chủ Xtream không trả về kênh phát nào."
+                isLoading = false
+                return false
+            }
+
+            let playlist = IPTVPlaylist(
+                id: UUID().uuidString,
+                name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Xtream Server" : name,
+                type: .xtream,
+                url: server,
+                channels: channels,
+                lastUpdated: Date(),
+                xtreamServer: server,
+                xtreamUsername: user,
+                xtreamPassword: pass
+            )
+
+            playlists.append(playlist)
+            selectPlaylist(id: playlist.id)
+            persistPlaylists()
+            isLoading = false
+            return true
+        } catch {
+            errorMessage = "Lỗi Xtream Codes: \(error.localizedDescription)"
+            isLoading = false
+            return false
+        }
+    }
+
+    // 4. Thêm Stalker Portal
+    public func addStalkerPlaylist(name: String, portalUrl: String, mac: String) async -> Bool {
+        isLoading = true
+        errorMessage = nil
+
+        do {
+            let channels = try await IPTVParser.shared.fetchStalkerChannels(portalUrl: portalUrl, mac: mac)
+            guard !channels.isEmpty else {
+                errorMessage = "Stalker Portal không có kênh nào khả dụng."
+                isLoading = false
+                return false
+            }
+
+            let playlist = IPTVPlaylist(
+                id: UUID().uuidString,
+                name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Stalker Portal" : name,
+                type: .stalker,
+                url: portalUrl,
+                channels: channels,
+                lastUpdated: Date(),
+                stalkerMac: mac
+            )
+
+            playlists.append(playlist)
+            selectPlaylist(id: playlist.id)
+            persistPlaylists()
+            isLoading = false
+            return true
+        } catch {
+            errorMessage = "Lỗi Stalker: \(error.localizedDescription)"
+            isLoading = false
+            return false
+        }
+    }
+
+    // 5. Cập nhật / Sửa Playlist (Edit)
+    public func updatePlaylist(id: String, newName: String) {
+        guard let index = playlists.firstIndex(where: { $0.id == id }) else { return }
+        playlists[index].name = newName
+        persistPlaylists()
+    }
+
+    // 6. Xóa Playlist (Remove)
+    public func deletePlaylist(id: String) {
+        if let pl = playlists.first(where: { $0.id == id }), let localFile = pl.localFileName {
+            let fileURL = documentsDirectory.appendingPathComponent(localFile)
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+
+        playlists.removeAll(where: { $0.id == id })
+        if activePlaylistId == id {
+            activePlaylistId = playlists.first?.id
+            UserDefaults.standard.set(activePlaylistId, forKey: activePlaylistIdKey)
+        }
+        persistPlaylists()
+    }
+
+    // 7. Làm mới Playlist (Refresh)
     public func refreshPlaylist(id: String) async {
         guard let index = playlists.firstIndex(where: { $0.id == id }) else { return }
         let playlist = playlists[index]
-        guard !playlist.url.isEmpty else { return }
 
         isLoading = true
         errorMessage = nil
 
         do {
-            let channels = try await IPTVParser.shared.fetchAndParse(from: playlist.url)
-            if !channels.isEmpty {
-                playlists[index].channels = channels
+            var freshChannels: [IPTVChannel] = []
+
+            switch playlist.type {
+            case .m3u:
+                freshChannels = try await IPTVParser.shared.fetchAndParse(from: playlist.url)
+            case .xtream:
+                if let s = playlist.xtreamServer, let u = playlist.xtreamUsername, let p = playlist.xtreamPassword {
+                    freshChannels = try await IPTVParser.shared.fetchXtreamChannels(server: s, user: u, pass: p)
+                }
+            case .stalker:
+                if let m = playlist.stalkerMac {
+                    freshChannels = try await IPTVParser.shared.fetchStalkerChannels(portalUrl: playlist.url, mac: m)
+                }
+            case .localFile:
+                if let localFile = playlist.localFileName {
+                    let fileURL = documentsDirectory.appendingPathComponent(localFile)
+                    if let data = try? Data(contentsOf: fileURL),
+                       let content = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .ascii) {
+                        freshChannels = IPTVParser.shared.parse(m3uContent: content)
+                    }
+                }
+            }
+
+            if !freshChannels.isEmpty {
+                playlists[index].channels = freshChannels
                 playlists[index].lastUpdated = Date()
                 persistPlaylists()
             }
@@ -107,16 +273,7 @@ public final class IPTVPlaylistStore: ObservableObject {
         isLoading = false
     }
 
-    public func deletePlaylist(id: String) {
-        playlists.removeAll(where: { $0.id == id })
-        if activePlaylistId == id {
-            activePlaylistId = playlists.first?.id
-            UserDefaults.standard.set(activePlaylistId, forKey: activePlaylistIdKey)
-        }
-        persistPlaylists()
-    }
-
-    // MARK: - Favorites
+    // MARK: - Favorites & Recents
 
     public func isFavorite(channel: IPTVChannel) -> Bool {
         favoriteIDs.contains(channel.streamUrl) || favoriteIDs.contains(channel.id)
@@ -136,13 +293,11 @@ public final class IPTVPlaylistStore: ObservableObject {
         currentChannels.filter { isFavorite(channel: $0) }
     }
 
-    // MARK: - Recents
-
     public func recordRecent(channel: IPTVChannel) {
         var updated = recentChannels.filter { $0.streamUrl != channel.streamUrl }
         updated.insert(channel, at: 0)
-        if updated.count > 25 {
-            updated = Array(updated.prefix(25))
+        if updated.count > 30 {
+            updated = Array(updated.prefix(30))
         }
         recentChannels = updated
         persistRecents()
@@ -150,9 +305,12 @@ public final class IPTVPlaylistStore: ObservableObject {
 
     // MARK: - Persistence
 
+    private var documentsDirectory: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    }
+
     private var storageFileURL: URL {
-        let paths = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
-        return paths[0].appendingPathComponent(storageFileName)
+        documentsDirectory.appendingPathComponent(storageFileName)
     }
 
     private func persistPlaylists() {
@@ -195,44 +353,5 @@ public final class IPTVPlaylistStore: ObservableObject {
            let channels = try? JSONDecoder().decode([IPTVChannel].self, from: data) {
             recentChannels = channels
         }
-    }
-
-    // MARK: - Default Sample Playlist
-    private func createDefaultSamplePlaylist() {
-        let sampleM3U = """
-        #EXTM3U
-        #EXTINF:-1 tvg-id="VTV1.vn" tvg-name="VTV1" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/e/e0/VTV1_logo_2013_final.svg/240px-VTV1_logo_2013_final.svg.png" group-title="Thời Sự",VTV1 HD
-        https://vtv1.vtvgo.vn/vtv1_hd.m3u8
-        #EXTINF:-1 tvg-id="VTV2.vn" tvg-name="VTV2" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/4/4c/VTV2_logo_2013_final.svg/240px-VTV2_logo_2013_final.svg.png" group-title="Khoa Giáo",VTV2 HD
-        https://vtv2.vtvgo.vn/vtv2_hd.m3u8
-        #EXTINF:-1 tvg-id="VTV3.vn" tvg-name="VTV3" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/7/77/VTV3_logo_2013_final.svg/240px-VTV3_logo_2013_final.svg.png" group-title="Giải Trí",VTV3 HD
-        https://vtv3.vtvgo.vn/vtv3_hd.m3u8
-        #EXTINF:-1 tvg-id="VTV4.vn" tvg-name="VTV4" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/b/b3/VTV4_logo_2013_final.svg/240px-VTV4_logo_2013_final.svg.png" group-title="Đối Ngoại",VTV4 HD
-        https://vtv4.vtvgo.vn/vtv4_hd.m3u8
-        #EXTINF:-1 tvg-id="VTV5.vn" tvg-name="VTV5" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cb/VTV5_logo_2013_final.svg/240px-VTV5_logo_2013_final.svg.png" group-title="Dân Tộc",VTV5 HD
-        https://vtv5.vtvgo.vn/vtv5_hd.m3u8
-        #EXTINF:-1 tvg-id="VTV7.vn" tvg-name="VTV7" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/e/e5/VTV7_logo_final.svg/240px-VTV7_logo_final.svg.png" group-title="Giáo Dục",VTV7 HD
-        https://vtv7.vtvgo.vn/vtv7_hd.m3u8
-        #EXTINF:-1 tvg-id="VTV9.vn" tvg-name="VTV9" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/9/90/VTV9_logo_2013_final.svg/240px-VTV9_logo_2013_final.svg.png" group-title="Thời Sự",VTV9 HD
-        https://vtv9.vtvgo.vn/vtv9_hd.m3u8
-        #EXTINF:-1 tvg-id="QuocHoiTV.vn" tvg-name="Quoc Hoi TV" tvg-logo="https://quochoitv.vn/Images/logo.png" group-title="Thời Sự",Truyền Hình Quốc Hội
-        https://quochoitv.vn/live/live.m3u8
-        #EXTINF:-1 tvg-id="VOVTV.vn" tvg-name="VOV TV" tvg-logo="https://upload.wikimedia.org/wikipedia/vi/thumb/9/9f/VOV_TV_logo.svg/240px-VOV_TV_logo.svg.png" group-title="Thời Sự",VOV TV HD
-        https://vovtv.vov.vn/live/live.m3u8
-        """
-
-        let defaultChannels = IPTVParser.shared.parse(m3uContent: sampleM3U)
-        let samplePlaylist = IPTVPlaylist(
-            id: "builtin_vietnam_essential",
-            name: "Kênh Truyền Hình Mẫu",
-            url: "https://iptv-org.github.io/iptv/countries/vn.m3u",
-            channels: defaultChannels,
-            lastUpdated: Date(),
-            isBuiltIn: true
-        )
-
-        playlists = [samplePlaylist]
-        activePlaylistId = samplePlaylist.id
-        persistPlaylists()
     }
 }

@@ -612,11 +612,7 @@ final class MPVPlayerViewController: UIViewController {
     private func isViewportReadyForPlayback(queuedAtUptime: TimeInterval) -> Bool {
         guard isViewLoaded, view.window != nil else { return false }
         let bounds = view.bounds
-        guard bounds.width > 1, bounds.height > 1 else { return false }
-        if bounds.width >= bounds.height { return true }
-
-        let age = ProcessInfo.processInfo.systemUptime - queuedAtUptime
-        return age >= 0.9
+        return bounds.width > 1 && bounds.height > 1
     }
 
     private func schedulePendingLoadRetry() {

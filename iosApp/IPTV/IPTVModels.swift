@@ -1,5 +1,23 @@
 import Foundation
 
+// MARK: - IPTV Playlist Type
+
+public enum IPTVPlaylistType: String, Codable, CaseIterable {
+    case m3u = "M3U / M3U8 Link"
+    case localFile = "File M3U Máy"
+    case xtream = "Xtream Codes"
+    case stalker = "Stalker Portal"
+
+    public var iconName: String {
+        switch self {
+        case .m3u: return "link"
+        case .localFile: return "doc.fill"
+        case .xtream: return "server.rack"
+        case .stalker: return "antenna.radiowaves.left.and.right"
+        }
+    }
+}
+
 // MARK: - IPTV Channel Model
 
 public struct IPTVChannel: Identifiable, Codable, Hashable {
@@ -38,7 +56,6 @@ public struct IPTVChannel: Identifiable, Codable, Hashable {
         self.licenseKey = licenseKey
     }
 
-    /// Kiểm tra định dạng luồng phát
     public var isMPEG_DASH: Bool {
         streamUrl.lowercased().contains(".mpd")
     }
@@ -66,32 +83,52 @@ public struct IPTVChannel: Identifiable, Codable, Hashable {
 public struct IPTVPlaylist: Identifiable, Codable, Hashable {
     public let id: String
     public var name: String
+    public var type: IPTVPlaylistType
     public var url: String
     public var channels: [IPTVChannel]
     public var lastUpdated: Date
-    public var isBuiltIn: Bool
+
+    // Xtream Codes Credentials
+    public var xtreamServer: String?
+    public var xtreamUsername: String?
+    public var xtreamPassword: String?
+
+    // Stalker Portal Credentials
+    public var stalkerMac: String?
+
+    // Local file stored path
+    public var localFileName: String?
 
     public init(
         id: String = UUID().uuidString,
         name: String,
-        url: String,
+        type: IPTVPlaylistType = .m3u,
+        url: String = "",
         channels: [IPTVChannel] = [],
         lastUpdated: Date = Date(),
-        isBuiltIn: Bool = false
+        xtreamServer: String? = nil,
+        xtreamUsername: String? = nil,
+        xtreamPassword: String? = nil,
+        stalkerMac: String? = nil,
+        localFileName: String? = nil
     ) {
         self.id = id
         self.name = name
+        self.type = type
         self.url = url
         self.channels = channels
         self.lastUpdated = lastUpdated
-        self.isBuiltIn = isBuiltIn
+        self.xtreamServer = xtreamServer
+        self.xtreamUsername = xtreamUsername
+        self.xtreamPassword = xtreamPassword
+        self.stalkerMac = stalkerMac
+        self.localFileName = localFileName
     }
 
     public var channelCount: Int {
         channels.count
     }
 
-    /// Lấy danh sách các nhóm/danh mục có trong playlist
     public var categories: [String] {
         let uniqueGroups = Set(channels.map(\.groupTitle))
         return uniqueGroups.sorted()
