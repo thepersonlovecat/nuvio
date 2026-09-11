@@ -753,6 +753,15 @@ final class MPVPlayerViewController: UIViewController {
         setFlagAsync("mute", muted)
     }
 
+    /// Pins the video to the TOP edge of the render surface (mpv's video-align-y=-1).
+    /// Used by the IPTV player: its surface permanently fills the screen while the
+    /// inline UI lives below a full-width 16:9 video window at the top, so the video
+    /// must align with that window instead of being vertically centered.
+    func alignVideoToTop() {
+        guard mpv != nil else { return }
+        setStringProperty("video-align-y", "-1")
+    }
+
     func setResize(_ mode: Int) {
         guard mpv != nil else { return }
         switch mode {

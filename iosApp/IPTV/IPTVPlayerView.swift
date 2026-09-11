@@ -2,104 +2,32 @@ import SwiftUI
 import UIKit
 import AVFoundation
 
-// MARK: - Player Host View Controller
+// MARK: - Player Surface Representable (Always Fullscreen)
 
-/// Owns the single MPV player and its geometry. The host view ALWAYS fills the whole
-/// screen (managed by SwiftUI); the player view inside is framed purely by UIKit.
+/// The MPV surface permanently fills the whole screen. It is NEVER moved, resized
+/// or remounted, so inline <-> fullscreen transitions cannot misplace the video:
 ///
-/// Design rationale: SwiftUI never touches the player view's frame, so there is no
-/// frame-battle between SwiftUI layout, rotation transitions and the metal surface.
-/// The metal layer inside MPVPlayerViewController simply tracks the view's bounds,
-/// and mpv handles all video scaling itself (keepaspect).
-final class IPTVPlayerHostViewController: UIViewController {
-    enum DisplayMode { case inline, fullscreen }
+/// - Inline (portrait): the UI lives below a full-width 16:9 "window" at the top
+///   of the screen; mpv aligns the video to the top of the surface
+///   (video-align-y = -1), so it lands exactly inside that window.
+/// - Fullscreen: the inline UI hides and the same surface stays visible
+///   edge-to-edge while the orientation lock rotates to landscape.
+struct IPTVPlayerSurfaceRepresentable: UIViewControllerRepresentable {
+    let playerVC: MPVPlayerViewController
 
-    let playerVC = MPVPlayerViewController()
-    private(set) var displayMode: DisplayMode = .inline
-    private var inlineRect: CGRect = .zero
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        view.backgroundColor = .clear
-        view.isOpaque = false
-
-        addChild(playerVC)
-        playerVC.view.autoresizingMask = [] // frames are owned by this host, never auto-resized
-        playerVC.view.clipsToBounds = true
-        playerVC.view.layer.cornerRadius = 12
-        playerVC.view.frame = inlineRect
-        view.addSubview(playerVC.view)
-        playerVC.didMove(toParent: self)
-
-        // PiP uses the player view as its source (kept alive across mode switches).
+    func makeUIViewController(context: Context) -> MPVPlayerViewController {
+        playerVC.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        playerVC.alignVideoToTop()
         IPTVPiPCoordinator.shared.configure(sourceView: playerVC.view)
+        return playerVC
     }
 
-    /// Called by SwiftUI whenever the inline 16:9 placeholder reports its frame
-    /// (in the host view's coordinate space = full-screen coordinate space).
-    func setInlineRect(_ rect: CGRect) {
-        guard rect.width > 1, rect.height > 1, rect != inlineRect else { return }
-        inlineRect = rect
-        if displayMode == .inline {
-            applyTarget(animated: false)
-        }
-    }
-
-    func setDisplayMode(_ mode: DisplayMode, animated: Bool) {
-        guard mode != displayMode else { return }
-        displayMode = mode
-        applyTarget(animated: animated)
-    }
-
-    private func targetRect() -> CGRect {
-        displayMode == .fullscreen ? view.bounds : inlineRect
-    }
-
-    private func applyTarget(animated: Bool) {
-        let target = targetRect()
-        guard target.width > 1, target.height > 1 else { return }
-        let cornerRadius: CGFloat = displayMode == .inline ? 12 : 0
-        let apply = {
-            self.playerVC.view.frame = target
-            self.playerVC.view.layer.cornerRadius = cornerRadius
-        }
-        if animated {
-            UIView.animate(withDuration: 0.25, delay: 0,
-                           options: [.curveEaseInOut, .beginFromCurrentState],
-                           animations: apply)
-        } else {
-            apply()
-        }
-    }
-
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        // Self-heal on every host size change (rotation, window resize): fullscreen
-        // always fills the host exactly. Inline follows rects pushed by SwiftUI.
-        // A mode-switch animation still in flight would otherwise overwrite the
-        // snapped frame with its stale target, so cancel it first.
-        if displayMode == .fullscreen, playerVC.view.frame != view.bounds {
-            playerVC.view.layer.removeAllAnimations()
-            playerVC.view.frame = view.bounds
-            playerVC.view.layer.cornerRadius = 0
-        }
+    func updateUIViewController(_ uiViewController: MPVPlayerViewController, context: Context) {
+        uiViewController.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
     }
 }
 
-// MARK: - Player Host SwiftUI Representable
-
-struct IPTVPlayerHostRepresentable: UIViewControllerRepresentable {
-    let hostVC: IPTVPlayerHostViewController
-
-    func makeUIViewController(context: Context) -> IPTVPlayerHostViewController {
-        hostVC.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        return hostVC
-    }
-
-    func updateUIViewController(_ uiViewController: IPTVPlayerHostViewController, context: Context) {}
-}
-
-// MARK: - IPTV Player Screen (Unified Architecture)
+// MARK: - IPTV Player Screen
 
 public struct IPTVPlayerView: View {
     @Environment(\.dismiss) private var dismiss
@@ -110,7 +38,7 @@ public struct IPTVPlayerView: View {
     public let playlistChannels: [IPTVChannel]
 
     // Player State
-    @State private var hostVC = IPTVPlayerHostViewController()
+    @State private var playerVC = MPVPlayerViewController()
     @State private var isPlaying: Bool = true
     @State private var isFullscreen: Bool = false
     @State private var showControls: Bool = true
@@ -118,10 +46,6 @@ public struct IPTVPlayerView: View {
     @State private var showFullscreenDrawer: Bool = false
     @State private var showAudioTrackSheet: Bool = false
     @State private var currentResizeIndex: Int = 0
-    @State private var inlineVideoRect: CGRect = .zero
-
-    /// Playback/controls still talk to the same single MPV player instance.
-    private var playerVC: MPVPlayerViewController { hostVC.playerVC }
 
     // Inline Channel Browser
     @State private var searchText: String = ""
@@ -161,103 +85,66 @@ public struct IPTVPlayerView: View {
         return window?.safeAreaInsets ?? .zero
     }
 
-    private var safeAreaTop: CGFloat {
-        let top = windowSafeAreaInsets.top
-        return top > 0 ? top : 47
-    }
-
-    /// Stores the inline 16:9 rect reported by the placeholder and forwards it to the
-    /// UIKit host. Only captured in portrait - in cinema/landscape the placeholder is
-    /// laid out with landscape dimensions which would poison the inline rect.
-    private func updateInlineVideoRect(_ frame: CGRect, geometry: GeometryProxy) {
-        guard geometry.size.width < geometry.size.height else { return }
-        guard frame.width > 1, frame.height > 1 else { return }
-        if frame != inlineVideoRect {
-            inlineVideoRect = frame
-            hostVC.setInlineRect(frame)
-        }
-    }
-
     public var body: some View {
         GeometryReader { geometry in
             let isLandscape = geometry.size.width > geometry.size.height
             let isCinema = isFullscreen || isLandscape
+            // The 16:9 video window at the top of the screen (portrait inline mode).
+            // mpv's video-align-y = -1 makes the video occupy exactly this band.
+            let bandHeight = (geometry.size.width * 9 / 16).rounded()
 
             ZStack(alignment: .topLeading) {
-                Color(red: 0.06, green: 0.06, blue: 0.07).ignoresSafeArea()
-
-                // 1. Chế độ xem chuẩn dọc (Inline Layout: Header, 16:9 Placeholder, Search, Channel List)
-                VStack(spacing: 0) {
-                    inlineHeaderView(geometry: geometry)
-
-                    // 16:9 Placeholder giữ chỗ + báo vị trí cho UIKit host
-                    Color.clear
-                        .aspectRatio(16 / 9, contentMode: .fit)
-                        .background(
-                            GeometryReader { gp in
-                                Color.clear
-                                    .onAppear {
-                                        updateInlineVideoRect(gp.frame(in: .named("iptvRoot")), geometry: geometry)
-                                    }
-                                    .onChange(of: gp.frame(in: .named("iptvRoot"))) { newValue in
-                                        updateInlineVideoRect(newValue, geometry: geometry)
-                                    }
-                            }
-                        )
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-
-                    // Thanh tìm kiếm & Nhóm kênh
-                    searchAndGroupsBar
-
-                    // Danh sách kênh cuộn
-                    channelsScrollView
-                }
-                .opacity(isCinema ? 0.0 : 1.0)
-                .allowsHitTesting(!isCinema)
-
-                // 2. Player surface: host UIKit luôn phủ toàn màn hình, tự quản lý
-                //    frame của player view (inline rect <-> fullscreen). Không bao giờ
-                //    unmount -> stream không bị ngắt khi chuyển chế độ.
-                IPTVPlayerHostRepresentable(hostVC: hostVC)
+                // 1. Video surface: permanent, full-screen, never moved or resized.
+                IPTVPlayerSurfaceRepresentable(playerVC: playerVC)
                     .ignoresSafeArea()
-                    .zIndex(10)
 
-                // 3. Inline controls nằm TRÊN video (đúng vị trí placeholder)
-                if !isCinema, inlineVideoRect.width > 1 {
-                    inlineControlsOverlay
-                        .frame(width: inlineVideoRect.width, height: inlineVideoRect.height)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12)
-                                .stroke(Color.white.opacity(0.12), lineWidth: 1)
-                                .allowsHitTesting(false)
-                        )
-                        .position(x: inlineVideoRect.midX, y: inlineVideoRect.midY)
+                // 2. Inline UI (portrait): everything lives BELOW the video window.
+                if !isCinema {
+                    VStack(spacing: 0) {
+                        // Transparent "window" the video shows through.
+                        Color.clear
+                            .frame(width: geometry.size.width, height: bandHeight)
+
+                        VStack(spacing: 0) {
+                            searchAndGroupsBar
+                            channelsScrollView
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color(red: 0.06, green: 0.06, blue: 0.07))
+                    }
+                    .transition(.opacity)
+                    .zIndex(10)
+                }
+
+                // 3. Inline controls floating on the video window.
+                if !isCinema {
+                    inlineBandOverlay
+                        .frame(width: geometry.size.width, height: bandHeight)
+                        .position(x: geometry.size.width / 2, y: bandHeight / 2)
                         .zIndex(15)
                 }
 
-                // 4. Lớp điều khiển Cinema / Fullscreen
+                // 4. Cinema / fullscreen controls.
                 if isCinema {
                     fullscreenOverlay(geometry: geometry)
                         .zIndex(20)
                 }
             }
-            .coordinateSpace(name: "iptvRoot")
-            .onAppear {
-                hostVC.setDisplayMode(isCinema ? .fullscreen : .inline, animated: false)
-            }
             .onChange(of: isCinema) { cinema in
-                // Single driver for the surface mode: entering/exiting fullscreen and
-                // device rotation both flow through here. On exit, isCinema only flips
-                // after the rotation to portrait completes, so the video stays
-                // fullscreen during the rotation animation and then glides back.
-                hostVC.setDisplayMode(cinema ? .fullscreen : .inline, animated: true)
                 if !cinema {
+                    // Fill/zoom (panscan) zooms into the WHOLE surface, which would
+                    // bleed over the inline UI - only allow it in fullscreen.
+                    if currentResizeIndex != 0 {
+                        currentResizeIndex = 0
+                        playerVC.setResize(0)
+                    }
                     showFullscreenDrawer = false
                 }
+                resetControlsTimer()
             }
         }
         .ignoresSafeArea()
+        .background(Color.black)
         .statusBarHidden(isFullscreen)
         .onAppear {
             store.recordRecent(channel: currentChannel)
@@ -272,9 +159,9 @@ public struct IPTVPlayerView: View {
         }
     }
 
-    // MARK: - Inline Controls Overlay
+    // MARK: - Inline Band Overlay (controls floating on the video window)
 
-    private var inlineControlsOverlay: some View {
+    private var inlineBandOverlay: some View {
         ZStack {
             // Tap area to toggle controls
             Color.black.opacity(0.001)
@@ -287,32 +174,71 @@ public struct IPTVPlayerView: View {
                 }
 
             if showControls {
-                Color.black.opacity(0.3)
+                Color.black.opacity(0.25)
                     .allowsHitTesting(false)
 
-                // Nút Play / Pause lớn ở giữa
-                Button {
-                    togglePlayPause()
-                } label: {
-                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 26, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 52, height: 52)
-                        .background(.ultraThinMaterial, in: Circle())
-                }
+                VStack(spacing: 0) {
+                    // Top row: Back / Title / PiP / Favorite
+                    HStack(spacing: 10) {
+                        Button {
+                            handleDismiss()
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 15, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 34, height: 34)
+                                .background(Color.black.opacity(0.45), in: Circle())
+                        }
 
-                // Thanh điều khiển dưới
-                VStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(currentChannel.name)
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                            Text(currentChannel.groupTitle.isEmpty ? "Truyền hình trực tiếp" : currentChannel.groupTitle)
+                                .font(.system(size: 10))
+                                .foregroundStyle(.white.opacity(0.7))
+                        }
+
+                        Spacer()
+
+                        if pipCoordinator.isPiPSupported {
+                            Button {
+                                pipCoordinator.togglePiP()
+                            } label: {
+                                Image(systemName: pipCoordinator.isPiPActive ? "pip.exit" : "pip.enter")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(pipCoordinator.isPiPActive ? .cyan : .white)
+                                    .frame(width: 32, height: 32)
+                                    .background(Color.black.opacity(0.45), in: Circle())
+                            }
+                        }
+
+                        Button {
+                            store.toggleFavorite(channel: currentChannel)
+                        } label: {
+                            Image(systemName: store.isFavorite(channel: currentChannel) ? "star.fill" : "star")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(store.isFavorite(channel: currentChannel) ? .yellow : .white)
+                                .frame(width: 32, height: 32)
+                                .background(Color.black.opacity(0.45), in: Circle())
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.top, max(windowSafeAreaInsets.top, 8) + 4)
+
                     Spacer()
+
+                    // Bottom row: LIVE badge / Fullscreen button
                     HStack {
                         HStack(spacing: 4) {
-                            Circle().fill(Color.red).frame(width: 6, height: 6)
+                            Circle().fill(Color.white).frame(width: 5, height: 5)
                             Text("LIVE")
                                 .font(.system(size: 10, weight: .black))
                                 .foregroundStyle(.white)
                         }
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
                         .background(Color.red, in: Capsule())
 
                         Spacer()
@@ -321,71 +247,30 @@ public struct IPTVPlayerView: View {
                             enterFullscreen()
                         } label: {
                             Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                .font(.system(size: 14, weight: .bold))
+                                .font(.system(size: 13, weight: .bold))
                                 .foregroundStyle(.white)
-                                .frame(width: 34, height: 34)
-                                .background(.ultraThinMaterial, in: Circle())
+                                .frame(width: 32, height: 32)
+                                .background(Color.black.opacity(0.45), in: Circle())
                         }
                     }
-                    .padding(10)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 10)
                 }
-            }
-        }
-    }
+                .transition(.opacity)
 
-    // MARK: - Inline Header
-
-    private func inlineHeaderView(geometry: GeometryProxy) -> some View {
-        HStack(spacing: 12) {
-            Button {
-                handleDismiss()
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 38, height: 38)
-                    .background(Color.white.opacity(0.1), in: Circle())
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(currentChannel.name)
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                Text(currentChannel.groupTitle.isEmpty ? "Truyền hình trực tiếp" : currentChannel.groupTitle)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.gray)
-            }
-
-            Spacer()
-
-            // PiP Button
-            if pipCoordinator.isPiPSupported {
+                // Center Play / Pause
                 Button {
-                    pipCoordinator.togglePiP()
+                    togglePlayPause()
                 } label: {
-                    Image(systemName: pipCoordinator.isPiPActive ? "pip.exit" : "pip.enter")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(pipCoordinator.isPiPActive ? .cyan : .white)
-                        .frame(width: 36, height: 36)
-                        .background(Color.white.opacity(0.1), in: Circle())
+                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 50, height: 50)
+                        .background(Color.black.opacity(0.45), in: Circle())
                 }
-            }
-
-            // Favorite Button
-            Button {
-                store.toggleFavorite(channel: currentChannel)
-            } label: {
-                Image(systemName: store.isFavorite(channel: currentChannel) ? "star.fill" : "star")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(store.isFavorite(channel: currentChannel) ? .yellow : .white)
-                    .frame(width: 36, height: 36)
-                    .background(Color.white.opacity(0.1), in: Circle())
+                .transition(.opacity)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, safeAreaTop + 6)
-        .padding(.bottom, 8)
     }
 
     // MARK: - Search & Groups Bar
@@ -404,7 +289,7 @@ public struct IPTVPlayerView: View {
             .padding(.vertical, 8)
             .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
             .padding(.horizontal, 12)
-            .padding(.top, 4)
+            .padding(.top, 10)
 
             // Nhóm kênh (Filter Chips)
             if availableGroups.count > 1 {
