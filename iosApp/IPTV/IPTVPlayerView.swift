@@ -8,11 +8,15 @@ struct MPVPlayerRepresentable: UIViewControllerRepresentable {
     let playerVC: MPVPlayerViewController
 
     func makeUIViewController(context: Context) -> MPVPlayerViewController {
+        playerVC.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         return playerVC
     }
 
     func updateUIViewController(_ uiViewController: MPVPlayerViewController, context: Context) {
-        // Player lifecycle and channel loading are managed by parent view
+        uiViewController.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        DispatchQueue.main.async {
+            uiViewController.syncVideoSurfaceLayout()
+        }
     }
 }
 
@@ -119,10 +123,12 @@ public struct IPTVPlayerView: View {
 
                 // 2. Video Panel: Render trực tiếp tại ZStack gốc (KHÔNG BAO GIỜ bị unmount/recreate)
                 let rect = inlineRect(for: geometry)
+                let cinemaWidth = max(geometry.size.width, geometry.size.height)
+                let cinemaHeight = min(geometry.size.width, geometry.size.height)
                 videoPanel(isCinema: isCinema)
                     .frame(
-                        width: isCinema ? geometry.size.width : rect.width,
-                        height: isCinema ? geometry.size.height : rect.height
+                        width: isCinema ? cinemaWidth : rect.width,
+                        height: isCinema ? cinemaHeight : rect.height
                     )
                     .position(
                         isCinema
@@ -140,8 +146,15 @@ public struct IPTVPlayerView: View {
                 }
             }
             .coordinateSpace(name: "iptvRoot")
-            .onChange(of: geometry.size) { newSize in
-                playerVC.syncVideoSurfaceLayout(size: newSize)
+            .onChange(of: isFullscreen) { _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    playerVC.syncVideoSurfaceLayout()
+                }
+            }
+            .onChange(of: geometry.size) { _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    playerVC.syncVideoSurfaceLayout()
+                }
             }
         }
         .statusBarHidden(isFullscreen)

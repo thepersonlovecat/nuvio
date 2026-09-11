@@ -319,6 +319,7 @@ final class MPVPlayerViewController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = .black
         view.layer.masksToBounds = true
+        view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
 
         metalLayer.contentsGravity = .resize
         metalLayer.contentsScale = view.window?.screen.nativeScale ?? UIScreen.main.nativeScale
@@ -401,8 +402,8 @@ final class MPVPlayerViewController: UIViewController {
         if let size, size.width > 1, size.height > 1 {
             externallyManagedViewSize = size
             applyExternallyManagedViewSize(size)
-        } else {
-            externallyManagedViewSize = nil
+        } else if let superview = view.superview, superview.bounds.width > 1, superview.bounds.height > 1 {
+            applyExternallyManagedViewSize(superview.bounds.size)
         }
         view.setNeedsLayout()
         view.layoutIfNeeded()
@@ -417,9 +418,10 @@ final class MPVPlayerViewController: UIViewController {
         pendingSurfaceLayoutWorkItems.forEach { $0.cancel() }
         pendingSurfaceLayoutWorkItems.removeAll(keepingCapacity: true)
 
+        let targetSize = externallyManagedViewSize
         [0.0, 0.05, 0.15, 0.35].forEach { delay in
             let workItem = DispatchWorkItem { [weak self] in
-                self?.syncVideoSurfaceLayoutNow(scheduleDeferredPasses: false)
+                self?.syncVideoSurfaceLayoutNow(size: targetSize, scheduleDeferredPasses: false)
             }
             pendingSurfaceLayoutWorkItems.append(workItem)
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
@@ -440,7 +442,14 @@ final class MPVPlayerViewController: UIViewController {
     }
 
     private func layoutMetalLayer() {
-        let currentSize = externallyManagedViewSize ?? view.bounds.size
+        let currentSize: CGSize
+        if let managed = externallyManagedViewSize, managed.width > 1, managed.height > 1 {
+            currentSize = managed
+        } else if let superview = view.superview, superview.bounds.width > 1, superview.bounds.height > 1 {
+            currentSize = superview.bounds.size
+        } else {
+            currentSize = view.bounds.size
+        }
         let bounds = CGRect(origin: .zero, size: currentSize)
         guard bounds.width > 1, bounds.height > 1 else { return }
 
