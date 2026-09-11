@@ -9,10 +9,16 @@ workflows:
         - ~/.gradle/wrapper
         - ~/.konan
         # Cache kết quả biên dịch Kotlin/Native & Gradle của KMP core:
-        # các lần build sau chỉ biên dịch lại phần code thay đổi (incremental)
-        # thay vì compile lại toàn bộ từ đầu.
         - $CM_BUILD_DIR/../composeApp/build
         - $CM_BUILD_DIR/../.gradle
+        - $CM_BUILD_DIR/../build
+        # Cache source repositories để không phải git clone lại từ GitHub:
+        - $CM_BUILD_DIR/../MPVKit
+        - $CM_BUILD_DIR/../NuvioMobile
+        # Cache Swift Package Manager & Xcode DerivedData để tăng tốc biên dịch Swift:
+        - ~/Library/Caches/org.swift.swiftpm
+        - ~/Library/org.swift.swiftpm
+        - $CM_BUILD_DIR/build/DerivedData
     environment:
       xcode: latest
       java: 17
@@ -25,24 +31,32 @@ workflows:
       - name: Chuẩn bị MPVKit và Kotlin Multiplatform Core
         script: |
           echo "=== 1. Chuẩn bị MPVKit Package ==="
-          if [ ! -d "../MPVKit" ]; then
+          if [ ! -d "../MPVKit/.git" ]; then
             echo "Cloning MPVKit into ../MPVKit..."
             git clone --depth 1 https://github.com/NuvioMedia/MPVKit.git ../MPVKit
+          else
+            echo "==> Đã có MPVKit từ Cache, bỏ qua clone."
           fi
 
           echo "=== 2. Chuẩn bị ComposeApp & Gradle Build Core ==="
-          if [ ! -d "/tmp/NuvioMobile" ]; then
+          if [ ! -d "../NuvioMobile/.git" ]; then
             echo "Tải riêng KMP Core cần cho iOS từ NuvioMobile (branch cmp-rewrite)..."
-            git clone --depth 1 --filter=blob:none --sparse --branch cmp-rewrite https://github.com/NuvioMedia/NuvioMobile.git /tmp/NuvioMobile
-            git -C /tmp/NuvioMobile sparse-checkout set --no-cone \
+            git clone --depth 1 --filter=blob:none --sparse --branch cmp-rewrite https://github.com/NuvioMedia/NuvioMobile.git ../NuvioMobile
+            git -C ../NuvioMobile sparse-checkout set --no-cone \
               /gradle/ /gradlew /gradlew.bat /gradle.properties /build.gradle.kts /settings.gradle.kts /composeApp/
+          else
+            echo "==> Đã có NuvioMobile từ Cache, bỏ qua clone."
           fi
 
           echo "Sao chép các thành phần Gradle và KMP..."
-          cp -r /tmp/NuvioMobile/gradle* ../
-          cp -r /tmp/NuvioMobile/build.gradle.kts ../
-          cp -r /tmp/NuvioMobile/settings.gradle.kts ../
-          cp -r /tmp/NuvioMobile/composeApp ../
+          cp -r ../NuvioMobile/gradle* ../
+          cp -r ../NuvioMobile/build.gradle.kts ../
+          cp -r ../NuvioMobile/settings.gradle.kts ../
+          if [ ! -d "../composeApp" ]; then
+            cp -r ../NuvioMobile/composeApp ../
+          else
+            rsync -a --update ../NuvioMobile/composeApp/ ../composeApp/
+          fi
           chmod +x ../gradlew
 
           echo "Cấu hình settings.gradle.kts cho iOS..."
@@ -120,8 +134,10 @@ workflows:
           # - cacheKind=static: cache sẵn thư viện native (stdlib, Compose, Ktor...)
           #   vào ~/.konan (đã được Codemagic cache) thay vì compile lại mỗi lần
           filtered.append('org.gradle.configuration-cache=true')
+          filtered.append('org.gradle.vfs.watch=true')
           filtered.append('kotlin.incremental=true')
           filtered.append('kotlin.native.cacheKind=static')
+          filtered.append('kotlin.native.binary.lto=none')
 
           with open(path, 'w', encoding='utf-8') as f:
               f.write('\n'.join(filtered) + '\n')
@@ -159,6 +175,8 @@ workflows:
             -configuration "$XCODE_CONFIGURATION" \
             -destination 'generic/platform=iOS' \
             -archivePath build/Nuvio.xcarchive \
+            -derivedDataPath build/DerivedData \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             archive \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
