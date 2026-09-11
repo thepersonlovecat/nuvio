@@ -10,12 +10,14 @@ struct MPVPlayerRepresentable: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> MPVPlayerViewController {
         playerVC.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        playerVC.prefersExternallyManagedSurfaceSize = true
         playerVC.syncVideoSurfaceLayout(size: targetSize)
         return playerVC
     }
 
     func updateUIViewController(_ uiViewController: MPVPlayerViewController, context: Context) {
         uiViewController.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        uiViewController.prefersExternallyManagedSurfaceSize = true
         uiViewController.syncVideoSurfaceLayout(size: targetSize)
     }
 }
@@ -85,7 +87,11 @@ public struct IPTVPlayerView: View {
     }
 
     private func inlineRect(for geometry: GeometryProxy) -> CGRect {
-        if portraitPlaceholderFrame.width > 0 && portraitPlaceholderFrame.height > 0 {
+        // Guard against a stale frame captured while in landscape/cinema mode:
+        // it must fit inside the current geometry, otherwise recompute.
+        if portraitPlaceholderFrame.width > 0 && portraitPlaceholderFrame.height > 0
+            && portraitPlaceholderFrame.width <= geometry.size.width
+            && portraitPlaceholderFrame.maxY <= geometry.size.height {
             return portraitPlaceholderFrame
         }
         let w = max(geometry.size.width - 24, 100)
@@ -128,10 +134,17 @@ public struct IPTVPlayerView: View {
                             GeometryReader { gp in
                                 Color.clear
                                     .onAppear {
-                                        self.portraitPlaceholderFrame = gp.frame(in: .named("iptvRoot"))
+                                        // Only capture while actually in portrait inline mode;
+                                        // in cinema/landscape this placeholder is laid out with
+                                        // landscape dimensions and would poison the inline rect.
+                                        if geometry.size.width < geometry.size.height {
+                                            self.portraitPlaceholderFrame = gp.frame(in: .named("iptvRoot"))
+                                        }
                                     }
                                     .onChange(of: gp.frame(in: .named("iptvRoot"))) { newValue in
-                                        self.portraitPlaceholderFrame = newValue
+                                        if geometry.size.width < geometry.size.height {
+                                            self.portraitPlaceholderFrame = newValue
+                                        }
                                     }
                             }
                         )

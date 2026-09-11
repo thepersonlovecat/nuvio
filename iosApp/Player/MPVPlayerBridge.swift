@@ -267,6 +267,12 @@ final class MPVPlayerViewController: UIViewController {
     private var pendingLoadRequest: PendingLoadRequest?
     private var pendingLoadRetryWorkItem: DispatchWorkItem?
     private var mpv: OpaquePointer?
+    /// When true (SwiftUI IPTV player), the surface size is owned exclusively by the
+    /// embedding view via syncVideoSurfaceLayout(size:). viewWillTransition must NOT
+    /// apply the window's transition size in that case: on fullscreen exit its
+    /// completion handler runs after SwiftUI's update and would clobber the correct
+    /// inline size with the full-window size, leaving the video misplaced.
+    var prefersExternallyManagedSurfaceSize: Bool = false
     private var cachedNowPlayingMetadata: CachedNowPlayingMetadata?
     private lazy var nowPlayingController = PlayerNowPlayingController(owner: self)
     private lazy var eventQueue = DispatchQueue(label: "mpv-events", qos: .userInitiated)
@@ -368,11 +374,14 @@ final class MPVPlayerViewController: UIViewController {
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
         super.viewWillTransition(to: size, with: coordinator)
 
-        syncVideoSurfaceLayoutNow(size: size, scheduleDeferredPasses: false)
+        // nil when externally managed: re-applies the current managed size instead of
+        // the (wrong for inline mode) window size. The owner pushes the new size itself.
+        let transitionSize: CGSize? = prefersExternallyManagedSurfaceSize ? nil : size
+        syncVideoSurfaceLayoutNow(size: transitionSize, scheduleDeferredPasses: false)
         coordinator.animate(alongsideTransition: { [weak self] _ in
-            self?.syncVideoSurfaceLayoutNow(size: size, scheduleDeferredPasses: false)
+            self?.syncVideoSurfaceLayoutNow(size: transitionSize, scheduleDeferredPasses: false)
         }, completion: { [weak self] _ in
-            self?.syncVideoSurfaceLayout(size: size)
+            self?.syncVideoSurfaceLayout(size: transitionSize)
             self?.attemptStartPendingLoad()
         })
     }
