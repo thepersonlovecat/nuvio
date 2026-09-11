@@ -101,6 +101,9 @@ final class MPVPlayerBridgeImpl: NSObject, NuvioPlayerBridge {
     func configureAudioOutput(audioOutput: String) {
         playerVC?.configureAudioOutput(audioOutput: audioOutput)
     }
+    func applyAudioLanguagePreferences(languages: [String]) {
+        playerVC?.applyAudioLanguagePreferences(languages)
+    }
     func setPlaybackSpeed(speed: Float) { playerVC?.setSpeed(speed) }
     func setMuted(muted: Bool) { playerVC?.setMuted(muted) }
     func setResizeMode(mode: Int32) { playerVC?.setResize(Int(mode)) }
@@ -269,6 +272,7 @@ final class MPVPlayerViewController: UIViewController {
     private lazy var eventQueue = DispatchQueue(label: "mpv-events", qos: .userInitiated)
     private var recentPlaybackLogs: [String] = []
     private var activeRequestHeaders: [String: String] = [:]
+    private var cachedAudioLanguages: [String] = []
 
     // Cached track lists
     var audioTracks: [TrackInfo] = []
@@ -490,6 +494,9 @@ final class MPVPlayerViewController: UIViewController {
         checkError(mpv_set_option_string(mpv, "hdr-compute-peak", "yes"))
 
         checkError(mpv_initialize(mpv))
+        if !cachedAudioLanguages.isEmpty {
+            applyAudioLanguagePreferences(cachedAudioLanguages)
+        }
 
         // Observe properties
         mpv_observe_property(mpv, 0, "pause", MPV_FORMAT_FLAG)
@@ -705,6 +712,18 @@ final class MPVPlayerViewController: UIViewController {
             resolvedAudioOutput = audioOutput
         }
         setStringProperty("ao", resolvedAudioOutput)
+    }
+
+    func applyAudioLanguagePreferences(_ languages: [String]) {
+        cachedAudioLanguages = languages
+        guard mpv != nil, !languages.isEmpty else { return }
+        let joined = languages
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: ",")
+        if !joined.isEmpty {
+            setStringProperty("alang", joined)
+        }
     }
 
     func setSpeed(_ speed: Float) {
