@@ -240,6 +240,7 @@ enum NuvioAppTab: String, CaseIterable, Hashable {
     var fallbackTitle: String {
         switch self {
         case .manga: return "Truyện"
+        case .library: return "IPTV"
         default: return String(localized: String.LocalizationValue(rawValue))
         }
     }
@@ -248,7 +249,7 @@ enum NuvioAppTab: String, CaseIterable, Hashable {
         switch kotlinName?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "home": return .home
         case "search": return .search
-        case "library": return .library
+        case "library", "iptv": return .library
         case "manga": return .manga
         case "settings", "profile": return .settings
         default: return nil
@@ -269,7 +270,7 @@ enum NuvioAppTab: String, CaseIterable, Hashable {
         switch self {
         case .home: return "house.fill"
         case .search: return "magnifyingglass"
-        case .library: return "rectangle.stack.fill"
+        case .library: return "tv.fill"
         case .manga: return "book.pages.fill"
         case .settings: return "person.crop.circle.fill"
         }
@@ -280,6 +281,10 @@ private enum NuvioNativeTabIcon {
     private static let legacyStaticIconSize = CGSize(width: 25, height: 25)
 
     static func image(for tab: NuvioAppTab) -> UIImage {
+        if tab == .library {
+            return (UIImage(systemName: "tv.fill") ?? UIImage())
+                .withRenderingMode(.alwaysTemplate)
+        }
         if let asset = UIImage(named: tab.iconAssetName) {
             return UIGraphicsImageRenderer(size: legacyStaticIconSize).image { _ in
                 asset
@@ -593,7 +598,10 @@ final class AppNavigationCoordinator: ObservableObject {
     }
 
     func title(for tab: NuvioAppTab) -> String {
-        localizedTabTitles[tab] ?? tab.fallbackTitle
+        if tab == .library {
+            return "IPTV"
+        }
+        return localizedTabTitles[tab] ?? tab.fallbackTitle
     }
 
     func updateTabTitles(
@@ -806,6 +814,10 @@ struct TabContentView: View {
         ) {
             if tab == .manga {
                 MangaCatalogView()
+                    .navigationTitle(appCoordinator.title(for: tab))
+                    .navigationBarHidden(true)
+            } else if tab == .library {
+                IPTVCatalogView()
                     .navigationTitle(appCoordinator.title(for: tab))
                     .navigationBarHidden(true)
             } else {

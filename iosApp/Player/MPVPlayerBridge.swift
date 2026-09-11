@@ -240,6 +240,7 @@ private struct PendingLoadRequest {
     let audioUrl: String?
     let requestHeaders: [String: String]
     let subtitles: [PluginSubtitle]
+    let decryptionKey: String?
     let queuedAtUptime: TimeInterval
 }
 
@@ -525,12 +526,19 @@ final class MPVPlayerViewController: UIViewController {
 
     // MARK: - Playback API
 
-    func loadFile(_ urlString: String, audioUrl: String? = nil, requestHeaders: [String: String] = [:], subtitles: [PluginSubtitle] = []) {
+    func loadFile(
+        _ urlString: String,
+        audioUrl: String? = nil,
+        requestHeaders: [String: String] = [:],
+        subtitles: [PluginSubtitle] = [],
+        decryptionKey: String? = nil
+    ) {
         let request = PendingLoadRequest(
             urlString: urlString,
             audioUrl: audioUrl,
             requestHeaders: requestHeaders,
             subtitles: subtitles,
+            decryptionKey: decryptionKey,
             queuedAtUptime: ProcessInfo.processInfo.systemUptime
         )
 
@@ -570,6 +578,14 @@ final class MPVPlayerViewController: UIViewController {
         let sanitizedHeaders = sanitizeRequestHeaders(request.requestHeaders)
         activeRequestHeaders = sanitizedHeaders
         applyRequestHeaders(sanitizedHeaders)
+
+        if let decryptionKey = request.decryptionKey, !decryptionKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let keyHex = decryptionKey.contains(":") ? String(decryptionKey.split(separator: ":").last ?? "") : decryptionKey
+            checkError(mpv_set_property_string(mpv, "demuxer-lavf-o", "decryption_key=\(keyHex.trimmingCharacters(in: .whitespacesAndNewlines))"))
+        } else {
+            checkError(mpv_set_property_string(mpv, "demuxer-lavf-o", ""))
+        }
+
         isPlayerLoading = true
         isPlayerEnded = false
         command("loadfile", args: [request.urlString, "replace"])
