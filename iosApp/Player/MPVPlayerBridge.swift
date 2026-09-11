@@ -391,9 +391,24 @@ final class MPVPlayerViewController: UIViewController {
         guard isViewLoaded else { return }
         if let size, size.width > 1, size.height > 1 {
             externallyManagedViewSize = size
-            applyExternallyManagedViewSize(size)
+        }
+
+        // Resolve the authoritative surface size. Once SwiftUI/Compose has handed us an
+        // explicit size, NEVER fall back to the superview: during rotation transitions the
+        // superview still reports pre-transition (stale) bounds, which previously clobbered
+        // the correct fullscreen size and left the video stuck at inline size in a corner.
+        let resolvedSize: CGSize?
+        if let managed = externallyManagedViewSize, managed.width > 1, managed.height > 1 {
+            resolvedSize = managed
         } else if let superview = view.superview, superview.bounds.width > 1, superview.bounds.height > 1 {
-            applyExternallyManagedViewSize(superview.bounds.size)
+            resolvedSize = superview.bounds.size
+            externallyManagedViewSize = resolvedSize
+        } else {
+            resolvedSize = nil
+        }
+
+        if let resolvedSize {
+            applyExternallyManagedViewSize(resolvedSize)
         }
         view.setNeedsLayout()
         view.layoutIfNeeded()
@@ -408,10 +423,11 @@ final class MPVPlayerViewController: UIViewController {
         pendingSurfaceLayoutWorkItems.forEach { $0.cancel() }
         pendingSurfaceLayoutWorkItems.removeAll(keepingCapacity: true)
 
-        let targetSize = externallyManagedViewSize
         [0.0, 0.05, 0.15, 0.35].forEach { delay in
             let workItem = DispatchWorkItem { [weak self] in
-                self?.syncVideoSurfaceLayoutNow(size: targetSize, scheduleDeferredPasses: false)
+                // Intentionally pass nil: re-apply the *current* managed size at execution
+                // time, so a pass scheduled before a rotation cannot resurrect a stale size.
+                self?.syncVideoSurfaceLayoutNow(size: nil, scheduleDeferredPasses: false)
             }
             pendingSurfaceLayoutWorkItems.append(workItem)
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
@@ -525,12 +541,12 @@ final class MPVPlayerViewController: UIViewController {
     @objc private func enterBackground() {
         guard mpv != nil else { return }
         pausePlayback()
-        setStringProperty("vid", "no")
+        setStringPropertyAsync("vid", "no")
     }
 
     @objc private func enterForeground() {
         guard mpv != nil else { return }
-        setStringProperty("vid", "auto")
+        setStringPropertyAsync("vid", "auto")
         playPlayback()
     }
 
@@ -598,11 +614,15 @@ final class MPVPlayerViewController: UIViewController {
 
         isPlayerLoading = true
         isPlayerEnded = false
-        command("stop")
-        command("loadfile", args: [request.urlString, "replace"])
+        // Async on purpose: synchronous mpv_command on the main thread can deadlock
+        // (core busy on a stuck network stream, or VO thread holding the core lock while
+        // waiting on the main thread). Async commands still execute FIFO, so the
+        // stop -> loadfile ordering is preserved.
+        commandAsync("stop")
+        commandAsync("loadfile", args: [request.urlString, "replace"])
         if let audioUrl = request.audioUrl, !audioUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                self?.command("audio-add", args: [audioUrl, "select"], checkForErrors: false)
+                self?.commandAsync("audio-add", args: [audioUrl, "select"])
             }
         }
 
@@ -639,14 +659,14 @@ final class MPVPlayerViewController: UIViewController {
     func playPlayback() {
         guard mpv != nil else { return }
         publishNowPlayingForPlaybackSession()
-        setFlag("pause", false)
+        setFlagAsync("pause", false)
         isPlayerPlaying = true
         syncNowPlayingPlaybackState(isPlaying: true)
     }
 
     func pausePlayback() {
         guard mpv != nil else { return }
-        setFlag("pause", true)
+        setFlagAsync("pause", true)
         isPlayerPlaying = false
         syncNowPlayingPlaybackState(isPlaying: false)
     }
@@ -656,7 +676,7 @@ final class MPVPlayerViewController: UIViewController {
         pendingLoadRetryWorkItem?.cancel()
         pendingLoadRetryWorkItem = nil
         pendingLoadRequest = nil
-        command("stop")
+        commandAsync("stop")
         isPlayerPlaying = false
         isPlayerLoading = true
         syncNowPlayingPlaybackState(isPlaying: false)
@@ -665,14 +685,14 @@ final class MPVPlayerViewController: UIViewController {
     func seekToMs(_ ms: Int64) {
         guard mpv != nil else { return }
         let seconds = Double(ms) / 1000.0
-        command("seek", args: [String(format: "%.3f", seconds), "absolute"])
+        commandAsync("seek", args: [String(format: "%.3f", seconds), "absolute"])
     }
 
     func seekByMs(_ ms: Int64, exact: Bool = false) {
         guard mpv != nil else { return }
         let seconds = Double(ms) / 1000.0
         let seekMode = exact ? "relative+exact" : "relative"
-        command("seek", args: [String(format: "%.3f", seconds), seekMode])
+        commandAsync("seek", args: [String(format: "%.3f", seconds), seekMode])
     }
 
     func retryPlayback() {
@@ -681,9 +701,9 @@ final class MPVPlayerViewController: UIViewController {
             clearPlaybackError()
             applyRequestHeaders(activeRequestHeaders)
             let pos = getDouble("time-pos")
-            command("loadfile", args: [path, "replace"])
+            commandAsync("loadfile", args: [path, "replace"])
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.command("seek", args: [String(format: "%.3f", pos), "absolute"])
+                self?.commandAsync("seek", args: [String(format: "%.3f", pos), "absolute"])
             }
         }
     }
@@ -751,7 +771,7 @@ final class MPVPlayerViewController: UIViewController {
 
     func setMuted(_ muted: Bool) {
         guard mpv != nil else { return }
-        setFlag("mute", muted)
+        setFlagAsync("mute", muted)
     }
 
     func setResize(_ mode: Int) {
@@ -772,9 +792,9 @@ final class MPVPlayerViewController: UIViewController {
     // MARK: - Track selection
 
     func selectAudio(_ trackId: Int) {
-        guard mpv != nil else { return }
+        guard let mpv else { return }
         var id = Int64(trackId)
-        mpv_set_property(mpv, "aid", MPV_FORMAT_INT64, &id)
+        mpv_set_property_async(mpv, 0, "aid", MPV_FORMAT_INT64, &id)
     }
 
     func selectSubtitle(_ trackId: Int) {
@@ -782,14 +802,15 @@ final class MPVPlayerViewController: UIViewController {
         if trackId < 0 {
             setStringProperty("sid", "no")
         } else {
+            guard let mpv else { return }
             var id = Int64(trackId)
-            mpv_set_property(mpv, "sid", MPV_FORMAT_INT64, &id)
+            mpv_set_property_async(mpv, 0, "sid", MPV_FORMAT_INT64, &id)
         }
     }
 
     func addSubtitleUrl(_ url: String) {
         guard mpv != nil else { return }
-        command("sub-add", args: [url, "select"])
+        commandAsync("sub-add", args: [url, "select"])
     }
 
     private func addSubtitle(_ subtitle: PluginSubtitle, mode: String) {
@@ -801,10 +822,9 @@ final class MPVPlayerViewController: UIViewController {
             applyRequestHeaders(previousHeaders.merging(subtitleHeaders) { _, subtitleValue in subtitleValue })
         }
 
-        command(
+        commandAsync(
             "sub-add",
-            args: [subtitle.url, mode, subtitle.name ?? subtitle.language, subtitle.language],
-            checkForErrors: false
+            args: [subtitle.url, mode, subtitle.name ?? subtitle.language, subtitle.language]
         )
 
         if !subtitleHeaders.isEmpty {
@@ -820,7 +840,7 @@ final class MPVPlayerViewController: UIViewController {
             let external = getFlag("track-list/\(i)/external")
             if type == "sub" && external {
                 let id = getInt("track-list/\(i)/id")
-                command("sub-remove", args: ["\(id)"], checkForErrors: false)
+                commandAsync("sub-remove", args: ["\(id)"])
             }
         }
         setStringProperty("sid", "no")
@@ -834,7 +854,7 @@ final class MPVPlayerViewController: UIViewController {
             let external = getFlag("track-list/\(i)/external")
             if type == "sub" && external {
                 let id = getInt("track-list/\(i)/id")
-                command("sub-remove", args: ["\(id)"], checkForErrors: false)
+                commandAsync("sub-remove", args: ["\(id)"])
             }
         }
         if trackId >= 0 {
@@ -1229,6 +1249,32 @@ final class MPVPlayerViewController: UIViewController {
         defer { for ptr in cargs where ptr != nil { free(UnsafeMutablePointer(mutating: ptr!)) } }
         let ret = mpv_command(mpv, &cargs)
         if checkForErrors { checkError(ret) }
+    }
+
+    /// Non-blocking variant. Use this on the main thread for playback-control commands
+    /// (stop/loadfile/seek/sub-add/...) so a busy or stuck mpv core can never freeze the UI.
+    /// mpv copies the argument strings before returning and executes commands FIFO.
+    private func commandAsync(_ command: String, args: [String?] = []) {
+        guard let mpv else { return }
+        var cargs = makeCArgs(command, args).map { $0.flatMap { UnsafePointer<CChar>(strdup($0)) } }
+        defer { for ptr in cargs where ptr != nil { free(UnsafeMutablePointer(mutating: ptr!)) } }
+        mpv_command_async(mpv, 0, &cargs)
+    }
+
+    /// Non-blocking flag setter for main-thread interactive paths (pause/mute).
+    private func setFlagAsync(_ name: String, _ flag: Bool) {
+        guard let mpv else { return }
+        var data: Int = flag ? 1 : 0
+        mpv_set_property_async(mpv, 0, name, MPV_FORMAT_FLAG, &data)
+    }
+
+    /// Non-blocking string setter for main-thread paths (vid on background/foreground).
+    private func setStringPropertyAsync(_ name: String, _ value: String) {
+        guard let mpv else { return }
+        value.withCString { cstr in
+            var ptr: UnsafePointer<CChar>? = cstr
+            mpv_set_property_async(mpv, 0, name, MPV_FORMAT_STRING, &ptr)
+        }
     }
 
     private func makeCArgs(_ command: String, _ args: [String?]) -> [String?] {
