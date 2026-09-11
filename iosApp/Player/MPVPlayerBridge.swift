@@ -262,17 +262,11 @@ final class MPVPlayerViewController: UIViewController {
     private let errorStateLock = NSLock()
     private var metalLayer = MetalLayer()
     private var lastAppliedDrawableSize: CGSize = .zero
-    private var externallyManagedViewSize: CGSize?
-    private var pendingSurfaceLayoutWorkItems: [DispatchWorkItem] = []
+    private var pendingDrawableSize: CGSize = .zero
+    private var drawableSizeWorkItem: DispatchWorkItem?
     private var pendingLoadRequest: PendingLoadRequest?
     private var pendingLoadRetryWorkItem: DispatchWorkItem?
     private var mpv: OpaquePointer?
-    /// When true (SwiftUI IPTV player), the surface size is owned exclusively by the
-    /// embedding view via syncVideoSurfaceLayout(size:). viewWillTransition must NOT
-    /// apply the window's transition size in that case: on fullscreen exit its
-    /// completion handler runs after SwiftUI's update and would clobber the correct
-    /// inline size with the full-window size, leaving the video misplaced.
-    var prefersExternallyManagedSurfaceSize: Bool = false
     private var cachedNowPlayingMetadata: CachedNowPlayingMetadata?
     private lazy var nowPlayingController = PlayerNowPlayingController(owner: self)
     private lazy var eventQueue = DispatchQueue(label: "mpv-events", qos: .userInitiated)
@@ -373,99 +367,47 @@ final class MPVPlayerViewController: UIViewController {
 
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
         super.viewWillTransition(to: size, with: coordinator)
-
-        // nil when externally managed: re-applies the current managed size instead of
-        // the (wrong for inline mode) window size. The owner pushes the new size itself.
-        let transitionSize: CGSize? = prefersExternallyManagedSurfaceSize ? nil : size
-        syncVideoSurfaceLayoutNow(size: transitionSize, scheduleDeferredPasses: false)
-        coordinator.animate(alongsideTransition: { [weak self] _ in
-            self?.syncVideoSurfaceLayoutNow(size: transitionSize, scheduleDeferredPasses: false)
-        }, completion: { [weak self] _ in
-            self?.syncVideoSurfaceLayout(size: transitionSize)
-            self?.attemptStartPendingLoad()
-        })
+        // The view tracks its container via autoresizing, so the surface follows
+        // automatically through viewDidLayoutSubviews. Just settle once at the end.
+        coordinator.animate(alongsideTransition: nil) { [weak self] _ in
+            guard let self else { return }
+            self.view.setNeedsLayout()
+            self.view.layoutIfNeeded()
+            self.attemptStartPendingLoad()
+        }
     }
 
+    /// Compatibility entry point for SwiftUI/Compose. The metal surface ALWAYS tracks
+    /// the view's own bounds (single source of truth = the host-set frame), so an
+    /// explicit size is only a hint used to pre-size the view before the host layout
+    /// lands; it can never diverge from the actual bounds at rest.
     func syncVideoSurfaceLayout(size: CGSize? = nil) {
         if Thread.isMainThread {
-            syncVideoSurfaceLayoutNow(size: size, scheduleDeferredPasses: true)
+            syncVideoSurfaceLayoutNow(size: size)
         } else {
             DispatchQueue.main.async { [weak self] in
-                self?.syncVideoSurfaceLayoutNow(size: size, scheduleDeferredPasses: true)
+                self?.syncVideoSurfaceLayoutNow(size: size)
             }
         }
     }
 
-    private func syncVideoSurfaceLayoutNow(size: CGSize? = nil, scheduleDeferredPasses: Bool) {
+    private func syncVideoSurfaceLayoutNow(size: CGSize? = nil) {
         guard isViewLoaded else { return }
-        if let size, size.width > 1, size.height > 1 {
-            externallyManagedViewSize = size
-        }
-
-        // Resolve the authoritative surface size. Once SwiftUI/Compose has handed us an
-        // explicit size, NEVER fall back to the superview: during rotation transitions the
-        // superview still reports pre-transition (stale) bounds, which previously clobbered
-        // the correct fullscreen size and left the video stuck at inline size in a corner.
-        let resolvedSize: CGSize?
-        if let managed = externallyManagedViewSize, managed.width > 1, managed.height > 1 {
-            resolvedSize = managed
-        } else if let superview = view.superview, superview.bounds.width > 1, superview.bounds.height > 1 {
-            resolvedSize = superview.bounds.size
-            externallyManagedViewSize = resolvedSize
-        } else {
-            resolvedSize = nil
-        }
-
-        if let resolvedSize {
-            applyExternallyManagedViewSize(resolvedSize)
+        if let size, size.width > 1, size.height > 1, view.bounds.size != size {
+            view.bounds = CGRect(origin: .zero, size: size)
+            if view.frame.size != size {
+                var frame = view.frame
+                frame.size = size
+                view.frame = frame
+            }
         }
         view.setNeedsLayout()
         view.layoutIfNeeded()
         layoutMetalLayer()
-
-        if scheduleDeferredPasses {
-            scheduleDeferredSurfaceLayoutPasses()
-        }
-    }
-
-    private func scheduleDeferredSurfaceLayoutPasses() {
-        pendingSurfaceLayoutWorkItems.forEach { $0.cancel() }
-        pendingSurfaceLayoutWorkItems.removeAll(keepingCapacity: true)
-
-        [0.0, 0.05, 0.15, 0.35].forEach { delay in
-            let workItem = DispatchWorkItem { [weak self] in
-                // Intentionally pass nil: re-apply the *current* managed size at execution
-                // time, so a pass scheduled before a rotation cannot resurrect a stale size.
-                self?.syncVideoSurfaceLayoutNow(size: nil, scheduleDeferredPasses: false)
-            }
-            pendingSurfaceLayoutWorkItems.append(workItem)
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
-        }
-    }
-
-    private func applyExternallyManagedViewSize(_ size: CGSize) {
-        let targetBounds = CGRect(origin: .zero, size: size)
-        if view.bounds != targetBounds {
-            view.bounds = targetBounds
-        }
-
-        var targetFrame = view.frame
-        if targetFrame.size != size {
-            targetFrame.size = size
-            view.frame = targetFrame
-        }
     }
 
     private func layoutMetalLayer() {
-        let currentSize: CGSize
-        if let managed = externallyManagedViewSize, managed.width > 1, managed.height > 1 {
-            currentSize = managed
-        } else if let superview = view.superview, superview.bounds.width > 1, superview.bounds.height > 1 {
-            currentSize = superview.bounds.size
-        } else {
-            currentSize = view.bounds.size
-        }
-        let bounds = CGRect(origin: .zero, size: currentSize)
+        let bounds = view.bounds
         guard bounds.width > 1, bounds.height > 1 else { return }
 
         let scale = view.window?.screen.nativeScale ?? UIScreen.main.nativeScale
@@ -480,12 +422,40 @@ final class MPVPlayerViewController: UIViewController {
         metalLayer.position = .zero
         metalLayer.bounds = CGRect(origin: .zero, size: bounds.size)
         metalLayer.frame = CGRect(origin: .zero, size: bounds.size)
-        if drawableSize != lastAppliedDrawableSize {
-            // mpv's moltenvk context polls drawableSize and resizes its swapchain.
-            metalLayer.drawableSize = drawableSize
-            lastAppliedDrawableSize = drawableSize
-        }
         CATransaction.commit()
+
+        if drawableSize != lastAppliedDrawableSize {
+            scheduleDrawableSizeApply(drawableSize)
+        }
+    }
+
+    /// Debounced drawableSize application. During animated transitions (fullscreen
+    /// toggle, rotation) the bounds change every frame; recreating the moltenvk
+    /// swapchain that often would stutter, so the layer just stretches its current
+    /// contents (contentsGravity = .resize) and the swapchain is resized once the
+    /// size settles. mpv polls drawableSize and re-renders crisply afterwards.
+    private func scheduleDrawableSizeApply(_ size: CGSize) {
+        pendingDrawableSize = size
+        drawableSizeWorkItem?.cancel()
+
+        // No valid drawable yet (initial layout): apply immediately so playback can start.
+        let needsImmediateApply = lastAppliedDrawableSize.width <= 1 || lastAppliedDrawableSize.height <= 1
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let target = self.pendingDrawableSize
+            guard target.width > 1, target.height > 1, target != self.lastAppliedDrawableSize else { return }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            self.metalLayer.drawableSize = target
+            CATransaction.commit()
+            self.lastAppliedDrawableSize = target
+        }
+        drawableSizeWorkItem = workItem
+        if needsImmediateApply {
+            DispatchQueue.main.async(execute: workItem)
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
+        }
     }
 
     // MARK: - MPV Setup
@@ -916,8 +886,8 @@ final class MPVPlayerViewController: UIViewController {
         resignFirstResponder()
         pendingLoadRetryWorkItem?.cancel()
         pendingLoadRetryWorkItem = nil
-        pendingSurfaceLayoutWorkItems.forEach { $0.cancel() }
-        pendingSurfaceLayoutWorkItems.removeAll(keepingCapacity: false)
+        drawableSizeWorkItem?.cancel()
+        drawableSizeWorkItem = nil
         pendingLoadRequest = nil
         nowPlayingController.invalidate()
         clearPlaybackError()

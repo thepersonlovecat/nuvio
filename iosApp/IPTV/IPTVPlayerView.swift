@@ -10,14 +10,12 @@ struct MPVPlayerRepresentable: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> MPVPlayerViewController {
         playerVC.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        playerVC.prefersExternallyManagedSurfaceSize = true
         playerVC.syncVideoSurfaceLayout(size: targetSize)
         return playerVC
     }
 
     func updateUIViewController(_ uiViewController: MPVPlayerViewController, context: Context) {
         uiViewController.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        uiViewController.prefersExternallyManagedSurfaceSize = true
         uiViewController.syncVideoSurfaceLayout(size: targetSize)
     }
 }
