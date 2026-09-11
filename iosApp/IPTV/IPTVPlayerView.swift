@@ -93,7 +93,7 @@ public struct IPTVPlayerView: View {
 
                 // 1. Chế độ xem chuẩn dọc (Inline Layout: Header, 16:9 Placeholder, Search, Channel List)
                 VStack(spacing: 0) {
-                    inlineHeaderView
+                    inlineHeaderView(geometry: geometry)
 
                     // 16:9 Placeholder cho Video Panel (giữ chỗ chuẩn vị trí mà không mount lại player)
                     Color.clear
@@ -157,6 +157,7 @@ public struct IPTVPlayerView: View {
                 }
             }
         }
+        .ignoresSafeArea()
         .statusBarHidden(isFullscreen)
         .onAppear {
             store.recordRecent(channel: currentChannel)
@@ -258,7 +259,7 @@ public struct IPTVPlayerView: View {
 
     // MARK: - Inline Header
 
-    private var inlineHeaderView: some View {
+    private func inlineHeaderView(geometry: GeometryProxy) -> some View {
         HStack(spacing: 12) {
             Button {
                 handleDismiss()
@@ -307,7 +308,7 @@ public struct IPTVPlayerView: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.top, 10)
+        .padding(.top, max(geometry.safeAreaInsets.top, 10))
         .padding(.bottom, 8)
     }
 
