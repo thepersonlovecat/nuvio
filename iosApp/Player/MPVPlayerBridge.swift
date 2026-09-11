@@ -377,22 +377,12 @@ final class MPVPlayerViewController: UIViewController {
         })
     }
 
-    func syncVideoSurfaceLayout(size: CGSize) {
+    func syncVideoSurfaceLayout(size: CGSize? = nil) {
         if Thread.isMainThread {
             syncVideoSurfaceLayoutNow(size: size, scheduleDeferredPasses: true)
         } else {
             DispatchQueue.main.async { [weak self] in
                 self?.syncVideoSurfaceLayoutNow(size: size, scheduleDeferredPasses: true)
-            }
-        }
-    }
-
-    private func syncVideoSurfaceLayout() {
-        if Thread.isMainThread {
-            syncVideoSurfaceLayoutNow(size: nil, scheduleDeferredPasses: true)
-        } else {
-            DispatchQueue.main.async { [weak self] in
-                self?.syncVideoSurfaceLayoutNow(size: nil, scheduleDeferredPasses: true)
             }
         }
     }
