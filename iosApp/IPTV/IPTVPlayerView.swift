@@ -100,7 +100,7 @@ public struct IPTVPlayerView: View {
                                     .onAppear {
                                         self.portraitPlaceholderFrame = gp.frame(in: .named("iptvRoot"))
                                     }
-                                    .onChange(of: gp.frame(in: .named("iptvRoot"))) { _, newValue in
+                                    .onChange(of: gp.frame(in: .named("iptvRoot"))) { newValue in
                                         self.portraitPlaceholderFrame = newValue
                                     }
                             }
@@ -140,7 +140,7 @@ public struct IPTVPlayerView: View {
                 }
             }
             .coordinateSpace(name: "iptvRoot")
-            .onChange(of: geometry.size) { _, newSize in
+            .onChange(of: geometry.size) { newSize in
                 playerVC.syncVideoSurfaceLayout(size: newSize)
             }
         }
