@@ -20,6 +20,14 @@ final class IPTVSurfaceHostController: UIViewController {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override var shouldAutorotate: Bool {
+        true
+    }
+
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        .allButUpsideDown
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
@@ -45,9 +53,34 @@ final class IPTVSurfaceHostController: UIViewController {
         }
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        playerVC.view.frame = view.bounds
+        playerVC.syncVideoSurfaceLayout(size: view.bounds.size)
+    }
+
+    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        playerVC.syncVideoSurfaceLayout(size: size)
+        coordinator.animate(alongsideTransition: { [weak self] _ in
+            self?.playerVC.syncVideoSurfaceLayout(size: size)
+        }, completion: { [weak self] _ in
+            guard let self = self else { return }
+            self.playerVC.syncVideoSurfaceLayout(size: self.view.bounds.size)
+        })
+    }
+
     func updateChannel(_ newChannel: IPTVChannel) {
+        guard self.channel.id != newChannel.id || self.channel.streamUrl != newChannel.streamUrl else {
+            return
+        }
         self.channel = newChannel
         loadChannel(newChannel)
+    }
+
+    func updateContainerSize(_ size: CGSize) {
+        guard size.width > 1, size.height > 1 else { return }
+        playerVC.syncVideoSurfaceLayout(size: size)
     }
 
     private func loadChannel(_ ch: IPTVChannel) {
@@ -71,6 +104,7 @@ final class IPTVSurfaceHostController: UIViewController {
 struct IPTVSurfaceRepresentable: UIViewControllerRepresentable {
     let playerVC: MPVPlayerViewController
     let channel: IPTVChannel
+    let containerSize: CGSize
 
     func makeUIViewController(context: Context) -> IPTVSurfaceHostController {
         IPTVSurfaceHostController(playerVC: playerVC, channel: channel)
@@ -78,6 +112,7 @@ struct IPTVSurfaceRepresentable: UIViewControllerRepresentable {
 
     func updateUIViewController(_ uiViewController: IPTVSurfaceHostController, context: Context) {
         uiViewController.updateChannel(channel)
+        uiViewController.updateContainerSize(containerSize)
     }
 }
 
@@ -122,11 +157,16 @@ public struct IPTVPlayerView: View {
     }
 
     public var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
+        GeometryReader { geometry in
+            ZStack {
+                Color.black.ignoresSafeArea()
 
-            // 1. MPV Video Surface
-            IPTVSurfaceRepresentable(playerVC: playerVC, channel: currentChannel)
+                // 1. MPV Video Surface
+                IPTVSurfaceRepresentable(
+                    playerVC: playerVC,
+                    channel: currentChannel,
+                    containerSize: geometry.size
+                )
                 .ignoresSafeArea()
                 .onTapGesture {
                     toggleControls()
@@ -196,6 +236,8 @@ public struct IPTVPlayerView: View {
                     .transition(.move(edge: .trailing))
             }
         }
+        .frame(width: geometry.size.width, height: geometry.size.height)
+        }
         .statusBarHidden(!showControls)
         .onAppear {
             store.recordRecent(channel: currentChannel)
@@ -217,6 +259,7 @@ public struct IPTVPlayerView: View {
             // Top Bar
             HStack(spacing: 12) {
                 Button {
+                    OrientationLockCoordinator.shared.rotateToPortrait()
                     dismiss()
                 } label: {
                     Image(systemName: "chevron.left")
@@ -687,8 +730,7 @@ public struct IPTVPlayerView: View {
         playerVC.pausePlayback()
         playerVC.clearNowPlayingInfo()
         playerVC.destroyPlayer()
-        if isLandscapeLocked {
-            NotificationCenter.default.post(name: Notification.Name("NuvioPlayerUnlockOrientation"), object: nil)
-        }
+        NotificationCenter.default.post(name: Notification.Name("NuvioPlayerUnlockOrientation"), object: nil)
+        OrientationLockCoordinator.shared.rotateToPortrait()
     }
 }

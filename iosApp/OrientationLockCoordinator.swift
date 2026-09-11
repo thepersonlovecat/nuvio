@@ -82,10 +82,23 @@ final class OrientationLockCoordinator {
         )
     }
 
+    func rotateToPortrait() {
+        supportedOrientations = .portrait
+        requestOrientationUpdate(for: .portrait, forceRotate: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self = self else { return }
+            self.supportedOrientations = .allButUpsideDown
+            self.requestOrientationUpdate(for: .allButUpsideDown, forceRotate: false)
+        }
+    }
+
     private func setLandscapeLock(enabled: Bool) {
-        let nextOrientations: UIInterfaceOrientationMask = enabled ? .landscape : .allButUpsideDown
-        supportedOrientations = nextOrientations
-        requestOrientationUpdate(for: nextOrientations, forceRotate: enabled)
+        if enabled {
+            supportedOrientations = .landscape
+            requestOrientationUpdate(for: .landscape, forceRotate: true)
+        } else {
+            rotateToPortrait()
+        }
     }
 
     private func requestOrientationUpdate(for mask: UIInterfaceOrientationMask, forceRotate: Bool) {

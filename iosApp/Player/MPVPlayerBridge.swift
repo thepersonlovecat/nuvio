@@ -367,9 +367,9 @@ final class MPVPlayerViewController: UIViewController {
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
         super.viewWillTransition(to: size, with: coordinator)
 
-        syncVideoSurfaceLayoutNow(scheduleDeferredPasses: false)
+        syncVideoSurfaceLayoutNow(size: size, scheduleDeferredPasses: false)
         coordinator.animate(alongsideTransition: { [weak self] _ in
-            self?.syncVideoSurfaceLayoutNow(scheduleDeferredPasses: false)
+            self?.syncVideoSurfaceLayoutNow(size: size, scheduleDeferredPasses: false)
         }, completion: { [weak self] _ in
             self?.syncVideoSurfaceLayout()
             self?.attemptStartPendingLoad()
@@ -401,6 +401,8 @@ final class MPVPlayerViewController: UIViewController {
         if let size, size.width > 1, size.height > 1 {
             externallyManagedViewSize = size
             applyExternallyManagedViewSize(size)
+        } else {
+            externallyManagedViewSize = nil
         }
         view.setNeedsLayout()
         view.layoutIfNeeded()
@@ -438,7 +440,8 @@ final class MPVPlayerViewController: UIViewController {
     }
 
     private func layoutMetalLayer() {
-        let bounds = CGRect(origin: .zero, size: externallyManagedViewSize ?? view.bounds.size)
+        let currentSize = externallyManagedViewSize ?? view.bounds.size
+        let bounds = CGRect(origin: .zero, size: currentSize)
         guard bounds.width > 1, bounds.height > 1 else { return }
 
         let scale = view.window?.screen.nativeScale ?? UIScreen.main.nativeScale
@@ -452,6 +455,7 @@ final class MPVPlayerViewController: UIViewController {
         metalLayer.contentsScale = scale
         metalLayer.position = .zero
         metalLayer.bounds = CGRect(origin: .zero, size: bounds.size)
+        metalLayer.frame = CGRect(origin: .zero, size: bounds.size)
         if drawableSize != lastAppliedDrawableSize {
             // mpv's moltenvk context polls drawableSize and resizes its swapchain.
             metalLayer.drawableSize = drawableSize
