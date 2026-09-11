@@ -16,7 +16,7 @@ struct MPVPlayerRepresentable: UIViewControllerRepresentable {
     }
 }
 
-// MARK: - IPTV Player Screen (Inspired by K-IPTV Architecture)
+// MARK: - IPTV Player Screen (Unified Architecture)
 
 public struct IPTVPlayerView: View {
     @Environment(\.dismiss) private var dismiss
@@ -35,6 +35,7 @@ public struct IPTVPlayerView: View {
     @State private var showFullscreenDrawer: Bool = false
     @State private var showAudioTrackSheet: Bool = false
     @State private var currentResizeIndex: Int = 0
+    @State private var portraitPlaceholderFrame: CGRect = .zero
 
     // Inline Channel Browser
     @State private var searchText: String = ""
@@ -68,20 +69,79 @@ public struct IPTVPlayerView: View {
         }
     }
 
+    private func inlineRect(for geometry: GeometryProxy) -> CGRect {
+        if portraitPlaceholderFrame.width > 0 && portraitPlaceholderFrame.height > 0 {
+            return portraitPlaceholderFrame
+        }
+        let w = max(geometry.size.width - 24, 100)
+        let h = w * 9 / 16
+        let topY = geometry.safeAreaInsets.top + 54
+        return CGRect(x: 12, y: topY, width: w, height: h)
+    }
+
     public var body: some View {
         GeometryReader { geometry in
             let isLandscape = geometry.size.width > geometry.size.height
+            let isCinema = isFullscreen || isLandscape
 
             ZStack(alignment: .topLeading) {
                 Color(red: 0.06, green: 0.06, blue: 0.07).ignoresSafeArea()
 
-                if isFullscreen || isLandscape {
-                    // Chế độ xem toàn màn hình (Landscape hoặc Fullscreen)
-                    fullscreenPlayerView(geometry: geometry)
-                } else {
-                    // Chế độ xem chuẩn dọc (Inline 16:9 Player + Danh sách kênh bên dưới giống K-IPTV)
-                    inlinePlayerLayout(geometry: geometry)
+                // 1. Chế độ xem chuẩn dọc (Inline Layout: Header, 16:9 Placeholder, Search, Channel List)
+                VStack(spacing: 0) {
+                    inlineHeaderView
+
+                    // 16:9 Placeholder cho Video Panel (giữ chỗ chuẩn vị trí mà không mount lại player)
+                    Color.clear
+                        .aspectRatio(16 / 9, contentMode: .fit)
+                        .background(
+                            GeometryReader { gp in
+                                Color.clear
+                                    .onAppear {
+                                        self.portraitPlaceholderFrame = gp.frame(in: .named("iptvRoot"))
+                                    }
+                                    .onChange(of: gp.frame(in: .named("iptvRoot"))) { _, newValue in
+                                        self.portraitPlaceholderFrame = newValue
+                                    }
+                            }
+                        )
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+
+                    // Thanh tìm kiếm & Nhóm kênh
+                    searchAndGroupsBar
+
+                    // Danh sách kênh cuộn
+                    channelsScrollView
                 }
+                .opacity(isCinema ? 0.0 : 1.0)
+                .allowsHitTesting(!isCinema)
+
+                // 2. Video Panel: Render trực tiếp tại ZStack gốc (KHÔNG BAO GIỜ bị unmount/recreate)
+                let rect = inlineRect(for: geometry)
+                videoPanel(isCinema: isCinema)
+                    .frame(
+                        width: isCinema ? geometry.size.width : rect.width,
+                        height: isCinema ? geometry.size.height : rect.height
+                    )
+                    .position(
+                        isCinema
+                            ? CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                            : CGPoint(x: rect.midX, y: rect.midY)
+                    )
+                    .ignoresSafeArea(isCinema ? .all : [])
+                    .shadow(color: isCinema ? .clear : .black.opacity(0.35), radius: 8, y: 4)
+                    .zIndex(10)
+
+                // 3. Lớp điều khiển Cinema / Fullscreen (Overlay trên Video Panel)
+                if isCinema {
+                    fullscreenOverlay(geometry: geometry)
+                        .zIndex(20)
+                }
+            }
+            .coordinateSpace(name: "iptvRoot")
+            .onChange(of: geometry.size) { _, newSize in
+                playerVC.syncVideoSurfaceLayout(size: newSize)
             }
         }
         .statusBarHidden(isFullscreen)
@@ -98,392 +158,411 @@ public struct IPTVPlayerView: View {
         }
     }
 
-    // MARK: - Inline Layout (Portrait)
+    // MARK: - Video Panel (Always Mounted)
 
-    private func inlinePlayerLayout(geometry: GeometryProxy) -> some View {
-        VStack(spacing: 0) {
-            // 1. Header Bar
-            HStack(spacing: 12) {
-                Button {
-                    handleDismiss()
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 38, height: 38)
-                        .background(Color.white.opacity(0.1), in: Circle())
-                }
+    private func videoPanel(isCinema: Bool) -> some View {
+        ZStack {
+            MPVPlayerRepresentable(playerVC: playerVC)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(currentChannel.name)
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                    Text(currentChannel.groupTitle.isEmpty ? "Truyền hình trực tiếp" : currentChannel.groupTitle)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.gray)
-                }
-
-                Spacer()
-
-                // PiP Button
-                if pipCoordinator.isPiPSupported {
-                    Button {
-                        pipCoordinator.togglePiP()
-                    } label: {
-                        Image(systemName: pipCoordinator.isPiPActive ? "pip.exit" : "pip.enter")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(pipCoordinator.isPiPActive ? .cyan : .white)
-                            .frame(width: 36, height: 36)
-                            .background(Color.white.opacity(0.1), in: Circle())
-                    }
-                }
-
-                // Favorite Button
-                Button {
-                    store.toggleFavorite(channel: currentChannel)
-                } label: {
-                    Image(systemName: store.isFavorite(channel: currentChannel) ? "star.fill" : "star")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(store.isFavorite(channel: currentChannel) ? .yellow : .white)
-                        .frame(width: 36, height: 36)
-                        .background(Color.white.opacity(0.1), in: Circle())
+            // Inline controls overlay
+            if !isCinema {
+                inlineControlsOverlay
+            }
+        }
+        .background(Color.black)
+        .clipShape(RoundedRectangle(cornerRadius: isCinema ? 0 : 12))
+        .overlay(
+            Group {
+                if !isCinema {
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 10)
-            .padding(.bottom, 8)
+        )
+    }
 
-            // 2. Video Player 16:9 Box (Inline)
-            ZStack {
-                MPVPlayerRepresentable(playerVC: playerVC)
-                    .aspectRatio(16/9, contentMode: .fit)
-                    .background(Color.black)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
-                    )
-                    .shadow(color: .black.opacity(0.4), radius: 10, y: 4)
-                    .onTapGesture {
-                        withAnimation { showControls.toggle() }
-                        if showControls { resetControlsTimer() }
+    // MARK: - Inline Controls Overlay
+
+    private var inlineControlsOverlay: some View {
+        ZStack {
+            // Tap area to toggle controls
+            Color.black.opacity(0.001)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showControls.toggle()
                     }
+                    if showControls { resetControlsTimer() }
+                }
 
-                // Overlay Controls khi chạm vào video
-                if showControls {
-                    ZStack {
-                        Color.black.opacity(0.3)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                            .allowsHitTesting(false)
+            if showControls {
+                Color.black.opacity(0.3)
+                    .allowsHitTesting(false)
 
-                        // Nút Play / Pause lớn ở giữa
-                        Button {
-                            togglePlayPause()
-                        } label: {
-                            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                                .font(.system(size: 28, weight: .bold))
+                // Nút Play / Pause lớn ở giữa
+                Button {
+                    togglePlayPause()
+                } label: {
+                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 26, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 52, height: 52)
+                        .background(.ultraThinMaterial, in: Circle())
+                }
+
+                // Thanh điều khiển dưới
+                VStack {
+                    Spacer()
+                    HStack {
+                        HStack(spacing: 4) {
+                            Circle().fill(Color.red).frame(width: 6, height: 6)
+                            Text("LIVE")
+                                .font(.system(size: 10, weight: .black))
                                 .foregroundStyle(.white)
-                                .frame(width: 54, height: 54)
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.red, in: Capsule())
+
+                        Spacer()
+
+                        Button {
+                            enterFullscreen()
+                        } label: {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 34, height: 34)
                                 .background(.ultraThinMaterial, in: Circle())
                         }
-
-                        // Bottom right: Nút Fullscreen
-                        VStack {
-                            Spacer()
-                            HStack {
-                                HStack(spacing: 4) {
-                                    Circle().fill(Color.red).frame(width: 6, height: 6)
-                                    Text("LIVE")
-                                        .font(.system(size: 10, weight: .black))
-                                        .foregroundStyle(.white)
-                                }
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
-                                .background(Color.red, in: Capsule())
-
-                                Spacer()
-
-                                Button {
-                                    enterFullscreen()
-                                } label: {
-                                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                        .font(.system(size: 14, weight: .bold))
-                                        .foregroundStyle(.white)
-                                        .frame(width: 34, height: 34)
-                                        .background(.ultraThinMaterial, in: Circle())
-                                }
-                            }
-                            .padding(10)
-                        }
                     }
-                    .aspectRatio(16/9, contentMode: .fit)
+                    .padding(10)
                 }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-
-            // 3. Thanh tìm kiếm & Lọc nhóm kênh bên dưới
-            VStack(spacing: 8) {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.caption)
-                        .foregroundStyle(.gray)
-                    TextField("Tìm kiếm nhanh trong danh sách kênh...", text: $searchText)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.white)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-                .padding(.horizontal, 12)
-                .padding(.top, 4)
-
-                // Nhóm kênh (Filter Chips)
-                if availableGroups.count > 1 {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(availableGroups, id: \.self) { grp in
-                                let isSel = selectedGroup == grp
-                                Button {
-                                    withAnimation { selectedGroup = grp }
-                                } label: {
-                                    Text(grp)
-                                        .font(.system(size: 12, weight: isSel ? .bold : .regular))
-                                        .foregroundStyle(isSel ? .black : .white.opacity(0.85))
-                                        .padding(.horizontal, 12)
-                                        .padding(.vertical, 5)
-                                        .background(isSel ? Color.cyan : Color.white.opacity(0.1), in: Capsule())
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                    }
-                }
-            }
-            .padding(.bottom, 6)
-
-            // 4. Danh sách kênh cuộn mượt mà bên dưới
-            ScrollView {
-                LazyVStack(spacing: 6) {
-                    ForEach(filteredChannels) { ch in
-                        let isCurrent = ch.id == currentChannel.id || ch.streamUrl == currentChannel.streamUrl
-                        Button {
-                            switchChannel(to: ch)
-                        } label: {
-                            HStack(spacing: 12) {
-                                if let logo = ch.logoUrl, let url = URL(string: logo) {
-                                    AsyncImage(url: url) { phase in
-                                        if let img = phase.image {
-                                            img.resizable().scaledToFit()
-                                        } else {
-                                            Image(systemName: "tv.fill").foregroundStyle(.gray)
-                                        }
-                                    }
-                                    .frame(width: 34, height: 34)
-                                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-                                } else {
-                                    Image(systemName: "tv.fill")
-                                        .foregroundStyle(.gray)
-                                        .frame(width: 34, height: 34)
-                                        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-                                }
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(ch.name)
-                                        .font(.system(size: 14, weight: isCurrent ? .bold : .medium))
-                                        .foregroundStyle(isCurrent ? .cyan : .white)
-                                        .lineLimit(1)
-                                    Text(ch.groupTitle.isEmpty ? "IPTV" : ch.groupTitle)
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(.white.opacity(0.5))
-                                }
-
-                                Spacer()
-
-                                if isCurrent {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "waveform")
-                                            .font(.caption2)
-                                        Text("Đang phát")
-                                            .font(.caption2.weight(.bold))
-                                    }
-                                    .foregroundStyle(.cyan)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 3)
-                                    .background(Color.cyan.opacity(0.18), in: Capsule())
-                                }
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(
-                                isCurrent ? Color.cyan.opacity(0.12) : Color.white.opacity(0.04),
-                                in: RoundedRectangle(cornerRadius: 10)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 24)
             }
         }
     }
 
-    // MARK: - Fullscreen Layout (Landscape / Fullscreen)
+    // MARK: - Inline Header
 
-    private func fullscreenPlayerView(geometry: GeometryProxy) -> some View {
+    private var inlineHeaderView: some View {
+        HStack(spacing: 12) {
+            Button {
+                handleDismiss()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 38, height: 38)
+                    .background(Color.white.opacity(0.1), in: Circle())
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(currentChannel.name)
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text(currentChannel.groupTitle.isEmpty ? "Truyền hình trực tiếp" : currentChannel.groupTitle)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.gray)
+            }
+
+            Spacer()
+
+            // PiP Button
+            if pipCoordinator.isPiPSupported {
+                Button {
+                    pipCoordinator.togglePiP()
+                } label: {
+                    Image(systemName: pipCoordinator.isPiPActive ? "pip.exit" : "pip.enter")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(pipCoordinator.isPiPActive ? .cyan : .white)
+                        .frame(width: 36, height: 36)
+                        .background(Color.white.opacity(0.1), in: Circle())
+                }
+            }
+
+            // Favorite Button
+            Button {
+                store.toggleFavorite(channel: currentChannel)
+            } label: {
+                Image(systemName: store.isFavorite(channel: currentChannel) ? "star.fill" : "star")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(store.isFavorite(channel: currentChannel) ? .yellow : .white)
+                    .frame(width: 36, height: 36)
+                    .background(Color.white.opacity(0.1), in: Circle())
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+    }
+
+    // MARK: - Search & Groups Bar
+
+    private var searchAndGroupsBar: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.caption)
+                    .foregroundStyle(.gray)
+                TextField("Tìm kiếm nhanh trong danh sách kênh...", text: $searchText)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.white)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal, 12)
+            .padding(.top, 4)
+
+            // Nhóm kênh (Filter Chips)
+            if availableGroups.count > 1 {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(availableGroups, id: \.self) { grp in
+                            let isSel = selectedGroup == grp
+                            Button {
+                                withAnimation { selectedGroup = grp }
+                            } label: {
+                                Text(grp)
+                                    .font(.system(size: 12, weight: isSel ? .bold : .regular))
+                                    .foregroundStyle(isSel ? .black : .white.opacity(0.85))
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 5)
+                                    .background(isSel ? Color.cyan : Color.white.opacity(0.1), in: Capsule())
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                }
+            }
+        }
+        .padding(.bottom, 6)
+    }
+
+    // MARK: - Channel List (Portrait)
+
+    private var channelsScrollView: some View {
+        ScrollView {
+            LazyVStack(spacing: 6) {
+                ForEach(filteredChannels) { ch in
+                    let isCurrent = ch.id == currentChannel.id || ch.streamUrl == currentChannel.streamUrl
+                    Button {
+                        switchChannel(to: ch)
+                    } label: {
+                        HStack(spacing: 12) {
+                            if let logo = ch.logoUrl, let url = URL(string: logo) {
+                                AsyncImage(url: url) { phase in
+                                    if let img = phase.image {
+                                        img.resizable().scaledToFit()
+                                    } else {
+                                        Image(systemName: "tv.fill").foregroundStyle(.gray)
+                                    }
+                                }
+                                .frame(width: 34, height: 34)
+                                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                            } else {
+                                Image(systemName: "tv.fill")
+                                    .foregroundStyle(.gray)
+                                    .frame(width: 34, height: 34)
+                                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                            }
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(ch.name)
+                                    .font(.system(size: 14, weight: isCurrent ? .bold : .medium))
+                                    .foregroundStyle(isCurrent ? .cyan : .white)
+                                    .lineLimit(1)
+                                Text(ch.groupTitle.isEmpty ? "IPTV" : ch.groupTitle)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.white.opacity(0.5))
+                            }
+
+                            Spacer()
+
+                            if isCurrent {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "waveform")
+                                        .font(.caption2)
+                                    Text("Đang phát")
+                                        .font(.caption2.weight(.bold))
+                                }
+                                .foregroundStyle(.cyan)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(Color.cyan.opacity(0.18), in: Capsule())
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(
+                            isCurrent ? Color.cyan.opacity(0.12) : Color.white.opacity(0.04),
+                            in: RoundedRectangle(cornerRadius: 10)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 24)
+        }
+    }
+
+    // MARK: - Fullscreen Overlay (Cinema Mode)
+
+    private func fullscreenOverlay(geometry: GeometryProxy) -> some View {
         ZStack {
-            // Video surface filling full screen
-            MPVPlayerRepresentable(playerVC: playerVC)
+            // Tap surface to toggle fullscreen controls
+            Color.black.opacity(0.001)
                 .ignoresSafeArea()
+                .contentShape(Rectangle())
                 .onTapGesture {
-                    withAnimation { showControls.toggle() }
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showControls.toggle()
+                    }
                     if showControls { resetControlsTimer() }
                 }
 
-            // Fullscreen Controls Overlay
             if showControls {
-                ZStack {
-                    Color.black.opacity(0.35)
-                        .ignoresSafeArea()
-                        .allowsHitTesting(false)
+                Color.black.opacity(0.35)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
 
-                    VStack {
-                        // Top Bar
-                        HStack(spacing: 12) {
-                            Button {
-                                exitFullscreen()
-                            } label: {
-                                Image(systemName: "chevron.left")
-                                    .font(.system(size: 16, weight: .bold))
-                                    .foregroundStyle(.white)
-                                    .frame(width: 40, height: 40)
-                                    .background(.ultraThinMaterial, in: Circle())
-                            }
-
-                            // Channel Title Capsule
-                            HStack(spacing: 8) {
-                                Circle().fill(Color.red).frame(width: 7, height: 7)
-                                Text(currentChannel.name)
-                                    .font(.system(size: 15, weight: .bold))
-                                    .foregroundStyle(.white)
-                                    .lineLimit(1)
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 7)
-                            .background(.black.opacity(0.65), in: Capsule())
-
-                            Spacer()
-
-                            // Aspect Ratio Toggle
-                            Button {
-                                cycleResize()
-                            } label: {
-                                Image(systemName: resizeModes[currentResizeIndex].icon)
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(.white)
-                                    .frame(width: 38, height: 38)
-                                    .background(.ultraThinMaterial, in: Circle())
-                            }
-
-                            // Audio Language Sheet
-                            Button {
-                                showAudioTrackSheet = true
-                            } label: {
-                                Image(systemName: "waveform")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(.white)
-                                    .frame(width: 38, height: 38)
-                                    .background(.ultraThinMaterial, in: Circle())
-                            }
-
-                            // Exit Fullscreen Button
-                            Button {
-                                exitFullscreen()
-                            } label: {
-                                Image(systemName: "arrow.down.right.and.arrow.up.left")
-                                    .font(.system(size: 14, weight: .bold))
-                                    .foregroundStyle(.white)
-                                    .frame(width: 38, height: 38)
-                                    .background(.ultraThinMaterial, in: Circle())
-                            }
-
-                            // Channel Drawer Button
-                            Button {
-                                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                                    showFullscreenDrawer.toggle()
-                                }
-                            } label: {
-                                Image(systemName: "list.bullet")
-                                    .font(.system(size: 14, weight: .bold))
-                                    .foregroundStyle(.white)
-                                    .frame(width: 38, height: 38)
-                                    .background(.ultraThinMaterial, in: Circle())
-                            }
+                VStack {
+                    // Top Bar
+                    HStack(spacing: 12) {
+                        Button {
+                            exitFullscreen()
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 40, height: 40)
+                                .background(.ultraThinMaterial, in: Circle())
                         }
-                        .padding(.horizontal, 20)
-                        .padding(.top, 14)
+
+                        // Channel Title Capsule
+                        HStack(spacing: 8) {
+                            Circle().fill(Color.red).frame(width: 7, height: 7)
+                            Text(currentChannel.name)
+                                .font(.system(size: 15, weight: .bold))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(.black.opacity(0.65), in: Capsule())
 
                         Spacer()
 
-                        // Center Play / Pause & Prev / Next
-                        HStack(spacing: 44) {
-                            Button {
-                                switchAdjacent(forward: false)
-                            } label: {
-                                Image(systemName: "backward.fill")
-                                    .font(.system(size: 22))
-                                    .foregroundStyle(.white.opacity(0.85))
-                                    .frame(width: 44, height: 44)
-                            }
-
-                            Button {
-                                togglePlayPause()
-                            } label: {
-                                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                                    .font(.system(size: 34, weight: .bold))
-                                    .foregroundStyle(.white)
-                                    .frame(width: 66, height: 66)
-                                    .background(.ultraThinMaterial, in: Circle())
-                            }
-
-                            Button {
-                                switchAdjacent(forward: true)
-                            } label: {
-                                Image(systemName: "forward.fill")
-                                    .font(.system(size: 22))
-                                    .foregroundStyle(.white.opacity(0.85))
-                                    .frame(width: 44, height: 44)
-                            }
+                        // Aspect Ratio Toggle
+                        Button {
+                            cycleResize()
+                        } label: {
+                            Image(systemName: resizeModes[currentResizeIndex].icon)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 38, height: 38)
+                                .background(.ultraThinMaterial, in: Circle())
                         }
 
-                        Spacer()
-
-                        // Bottom Bar
-                        HStack {
-                            HStack(spacing: 6) {
-                                Circle().fill(Color.red).frame(width: 8, height: 8)
-                                Text("TRUYỀN HÌNH TRỰC TIẾP")
-                                    .font(.system(size: 11, weight: .black))
-                                    .foregroundStyle(.white)
-                            }
-
-                            Spacer()
-
-                            Button {
-                                reloadStream()
-                            } label: {
-                                Image(systemName: "arrow.clockwise")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(.white)
-                                    .frame(width: 34, height: 34)
-                                    .background(.ultraThinMaterial, in: Circle())
-                            }
+                        // Audio Language Sheet
+                        Button {
+                            showAudioTrackSheet = true
+                        } label: {
+                            Image(systemName: "waveform")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 38, height: 38)
+                                .background(.ultraThinMaterial, in: Circle())
                         }
-                        .padding(.horizontal, 24)
-                        .padding(.bottom, 20)
+
+                        // Exit Fullscreen Button
+                        Button {
+                            exitFullscreen()
+                        } label: {
+                            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 38, height: 38)
+                                .background(.ultraThinMaterial, in: Circle())
+                        }
+
+                        // Channel Drawer Button
+                        Button {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                showFullscreenDrawer.toggle()
+                            }
+                        } label: {
+                            Image(systemName: "list.bullet")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 38, height: 38)
+                                .background(.ultraThinMaterial, in: Circle())
+                        }
                     }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 14)
+
+                    Spacer()
+
+                    // Center Prev / Play-Pause / Next
+                    HStack(spacing: 44) {
+                        Button {
+                            switchAdjacent(forward: false)
+                        } label: {
+                            Image(systemName: "backward.fill")
+                                .font(.system(size: 22))
+                                .foregroundStyle(.white.opacity(0.85))
+                                .frame(width: 44, height: 44)
+                        }
+
+                        Button {
+                            togglePlayPause()
+                        } label: {
+                            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                                .font(.system(size: 34, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 66, height: 66)
+                                .background(.ultraThinMaterial, in: Circle())
+                        }
+
+                        Button {
+                            switchAdjacent(forward: true)
+                        } label: {
+                            Image(systemName: "forward.fill")
+                                .font(.system(size: 22))
+                                .foregroundStyle(.white.opacity(0.85))
+                                .frame(width: 44, height: 44)
+                        }
+                    }
+
+                    Spacer()
+
+                    // Bottom Bar
+                    HStack {
+                        HStack(spacing: 6) {
+                            Circle().fill(Color.red).frame(width: 8, height: 8)
+                            Text("TRUYỀN HÌNH TRỰC TIẾP")
+                                .font(.system(size: 11, weight: .black))
+                                .foregroundStyle(.white)
+                        }
+
+                        Spacer()
+
+                        Button {
+                            reloadStream()
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 34, height: 34)
+                                .background(.ultraThinMaterial, in: Circle())
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 20)
                 }
                 .transition(.opacity)
             }
@@ -514,19 +593,22 @@ public struct IPTVPlayerView: View {
                         ScrollView {
                             LazyVStack(spacing: 6) {
                                 ForEach(playlistChannels) { ch in
-                                    let isCurrent = ch.id == currentChannel.id
+                                    let isCurrent = ch.id == currentChannel.id || ch.streamUrl == currentChannel.streamUrl
                                     Button {
                                         switchChannel(to: ch)
                                         withAnimation { showFullscreenDrawer = false }
                                     } label: {
                                         HStack(spacing: 10) {
+                                            Image(systemName: "tv")
+                                                .font(.caption)
+                                                .foregroundStyle(isCurrent ? .cyan : .gray)
                                             Text(ch.name)
-                                                .font(.system(size: 13, weight: isCurrent ? .bold : .medium))
+                                                .font(.system(size: 13, weight: isCurrent ? .bold : .regular))
                                                 .foregroundStyle(isCurrent ? .cyan : .white)
                                                 .lineLimit(1)
                                             Spacer()
                                             if isCurrent {
-                                                Image(systemName: "waveform").foregroundStyle(.cyan)
+                                                Circle().fill(Color.cyan).frame(width: 6, height: 6)
                                             }
                                         }
                                         .padding(.horizontal, 10)
@@ -590,6 +672,7 @@ public struct IPTVPlayerView: View {
     // MARK: - Playback Logic & Actions
 
     private func loadChannel(_ ch: IPTVChannel) {
+        playerVC.stopPlayback()
         playerVC.updateNowPlayingMetadata(
             title: ch.name,
             subtitle: ch.groupTitle,
@@ -608,6 +691,7 @@ public struct IPTVPlayerView: View {
 
     private func switchChannel(to newChannel: IPTVChannel) {
         guard currentChannel.id != newChannel.id || currentChannel.streamUrl != newChannel.streamUrl else { return }
+        playerVC.stopPlayback()
         currentChannel = newChannel
         store.recordRecent(channel: newChannel)
         loadChannel(newChannel)
@@ -649,7 +733,7 @@ public struct IPTVPlayerView: View {
     }
 
     private func enterFullscreen() {
-        withAnimation {
+        withAnimation(.easeInOut(duration: 0.3)) {
             isFullscreen = true
         }
         NotificationCenter.default.post(name: Notification.Name("NuvioPlayerLockLandscape"), object: nil)
@@ -657,7 +741,7 @@ public struct IPTVPlayerView: View {
     }
 
     private func exitFullscreen() {
-        withAnimation {
+        withAnimation(.easeInOut(duration: 0.3)) {
             isFullscreen = false
             showFullscreenDrawer = false
         }
@@ -687,7 +771,7 @@ public struct IPTVPlayerView: View {
 
     private func tearDown() {
         controlsTimer?.cancel()
-        playerVC.pausePlayback()
+        playerVC.stopPlayback()
         playerVC.clearNowPlayingInfo()
         playerVC.destroyPlayer()
         OrientationLockCoordinator.shared.rotateToPortrait()

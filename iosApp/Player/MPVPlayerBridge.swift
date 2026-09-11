@@ -599,6 +599,7 @@ final class MPVPlayerViewController: UIViewController {
 
         isPlayerLoading = true
         isPlayerEnded = false
+        command("stop")
         command("loadfile", args: [request.urlString, "replace"])
         if let audioUrl = request.audioUrl, !audioUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
@@ -614,9 +615,15 @@ final class MPVPlayerViewController: UIViewController {
     }
 
     private func isViewportReadyForPlayback(queuedAtUptime: TimeInterval) -> Bool {
-        guard isViewLoaded, view.window != nil else { return false }
-        let bounds = view.bounds
-        return bounds.width > 1 && bounds.height > 1
+        guard isViewLoaded else { return false }
+        if view.window != nil && view.bounds.width > 1 && view.bounds.height > 1 {
+            return true
+        }
+        // If viewport check delayed by view transitions, allow load after 0.5s timeout to prevent getting stuck
+        if ProcessInfo.processInfo.systemUptime - queuedAtUptime > 0.5 {
+            return true
+        }
+        return false
     }
 
     private func schedulePendingLoadRetry() {
@@ -642,6 +649,17 @@ final class MPVPlayerViewController: UIViewController {
         guard mpv != nil else { return }
         setFlag("pause", true)
         isPlayerPlaying = false
+        syncNowPlayingPlaybackState(isPlaying: false)
+    }
+
+    func stopPlayback() {
+        guard mpv != nil else { return }
+        pendingLoadRetryWorkItem?.cancel()
+        pendingLoadRetryWorkItem = nil
+        pendingLoadRequest = nil
+        command("stop")
+        isPlayerPlaying = false
+        isPlayerLoading = true
         syncNowPlayingPlaybackState(isPlaying: false)
     }
 
@@ -1305,10 +1323,26 @@ final class MPVPlayerViewController: UIViewController {
         guard mpv != nil else { return }
         if headers.isEmpty {
             checkError(mpv_set_property_string(mpv, "http-header-fields", ""))
+            checkError(mpv_set_property_string(mpv, "user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"))
+            checkError(mpv_set_property_string(mpv, "referrer", ""))
             return
         }
 
+        // Set User-Agent property specifically if present, or fallback to standard iOS Safari User-Agent
+        if let ua = headers.first(where: { $0.key.caseInsensitiveCompare("User-Agent") == .orderedSame })?.value {
+            checkError(mpv_set_property_string(mpv, "user-agent", ua))
+        } else {
+            checkError(mpv_set_property_string(mpv, "user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"))
+        }
+
+        if let referer = headers.first(where: { $0.key.caseInsensitiveCompare("Referer") == .orderedSame })?.value {
+            checkError(mpv_set_property_string(mpv, "referrer", referer))
+        } else {
+            checkError(mpv_set_property_string(mpv, "referrer", ""))
+        }
+
         let serialized = headers
+            .filter { $0.key.caseInsensitiveCompare("User-Agent") != .orderedSame }
             .sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
             .map { key, value in
                 let escapedValue = value
