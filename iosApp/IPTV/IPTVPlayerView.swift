@@ -2,22 +2,101 @@ import SwiftUI
 import UIKit
 import AVFoundation
 
-// MARK: - MPV Player UIKit Representable
+// MARK: - Player Host View Controller
 
-struct MPVPlayerRepresentable: UIViewControllerRepresentable {
-    let playerVC: MPVPlayerViewController
-    let targetSize: CGSize
+/// Owns the single MPV player and its geometry. The host view ALWAYS fills the whole
+/// screen (managed by SwiftUI); the player view inside is framed purely by UIKit.
+///
+/// Design rationale: SwiftUI never touches the player view's frame, so there is no
+/// frame-battle between SwiftUI layout, rotation transitions and the metal surface.
+/// The metal layer inside MPVPlayerViewController simply tracks the view's bounds,
+/// and mpv handles all video scaling itself (keepaspect).
+final class IPTVPlayerHostViewController: UIViewController {
+    enum DisplayMode { case inline, fullscreen }
 
-    func makeUIViewController(context: Context) -> MPVPlayerViewController {
-        playerVC.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        playerVC.syncVideoSurfaceLayout(size: targetSize)
-        return playerVC
+    let playerVC = MPVPlayerViewController()
+    private(set) var displayMode: DisplayMode = .inline
+    private var inlineRect: CGRect = .zero
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+        view.isOpaque = false
+
+        addChild(playerVC)
+        playerVC.view.autoresizingMask = [] // frames are owned by this host, never auto-resized
+        playerVC.view.clipsToBounds = true
+        playerVC.view.layer.cornerRadius = 12
+        playerVC.view.frame = inlineRect
+        view.addSubview(playerVC.view)
+        playerVC.didMove(toParent: self)
+
+        // PiP uses the player view as its source (kept alive across mode switches).
+        IPTVPiPCoordinator.shared.configure(sourceView: playerVC.view)
     }
 
-    func updateUIViewController(_ uiViewController: MPVPlayerViewController, context: Context) {
-        uiViewController.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        uiViewController.syncVideoSurfaceLayout(size: targetSize)
+    /// Called by SwiftUI whenever the inline 16:9 placeholder reports its frame
+    /// (in the host view's coordinate space = full-screen coordinate space).
+    func setInlineRect(_ rect: CGRect) {
+        guard rect.width > 1, rect.height > 1, rect != inlineRect else { return }
+        inlineRect = rect
+        if displayMode == .inline {
+            applyTarget(animated: false)
+        }
     }
+
+    func setDisplayMode(_ mode: DisplayMode, animated: Bool) {
+        guard mode != displayMode else { return }
+        displayMode = mode
+        applyTarget(animated: animated)
+    }
+
+    private func targetRect() -> CGRect {
+        displayMode == .fullscreen ? view.bounds : inlineRect
+    }
+
+    private func applyTarget(animated: Bool) {
+        let target = targetRect()
+        guard target.width > 1, target.height > 1 else { return }
+        let cornerRadius: CGFloat = displayMode == .inline ? 12 : 0
+        let apply = {
+            self.playerVC.view.frame = target
+            self.playerVC.view.layer.cornerRadius = cornerRadius
+        }
+        if animated {
+            UIView.animate(withDuration: 0.25, delay: 0,
+                           options: [.curveEaseInOut, .beginFromCurrentState],
+                           animations: apply)
+        } else {
+            apply()
+        }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // Self-heal on every host size change (rotation, window resize): fullscreen
+        // always fills the host exactly. Inline follows rects pushed by SwiftUI.
+        // A mode-switch animation still in flight would otherwise overwrite the
+        // snapped frame with its stale target, so cancel it first.
+        if displayMode == .fullscreen, playerVC.view.frame != view.bounds {
+            playerVC.view.layer.removeAllAnimations()
+            playerVC.view.frame = view.bounds
+            playerVC.view.layer.cornerRadius = 0
+        }
+    }
+}
+
+// MARK: - Player Host SwiftUI Representable
+
+struct IPTVPlayerHostRepresentable: UIViewControllerRepresentable {
+    let hostVC: IPTVPlayerHostViewController
+
+    func makeUIViewController(context: Context) -> IPTVPlayerHostViewController {
+        hostVC.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        return hostVC
+    }
+
+    func updateUIViewController(_ uiViewController: IPTVPlayerHostViewController, context: Context) {}
 }
 
 // MARK: - IPTV Player Screen (Unified Architecture)
@@ -31,7 +110,7 @@ public struct IPTVPlayerView: View {
     public let playlistChannels: [IPTVChannel]
 
     // Player State
-    @State private var playerVC = MPVPlayerViewController()
+    @State private var hostVC = IPTVPlayerHostViewController()
     @State private var isPlaying: Bool = true
     @State private var isFullscreen: Bool = false
     @State private var showControls: Bool = true
@@ -39,7 +118,10 @@ public struct IPTVPlayerView: View {
     @State private var showFullscreenDrawer: Bool = false
     @State private var showAudioTrackSheet: Bool = false
     @State private var currentResizeIndex: Int = 0
-    @State private var portraitPlaceholderFrame: CGRect = .zero
+    @State private var inlineVideoRect: CGRect = .zero
+
+    /// Playback/controls still talk to the same single MPV player instance.
+    private var playerVC: MPVPlayerViewController { hostVC.playerVC }
 
     // Inline Channel Browser
     @State private var searchText: String = ""
@@ -84,39 +166,22 @@ public struct IPTVPlayerView: View {
         return top > 0 ? top : 47
     }
 
-    private func inlineRect(for geometry: GeometryProxy) -> CGRect {
-        // Guard against a stale frame captured while in landscape/cinema mode:
-        // it must fit inside the current geometry, otherwise recompute.
-        if portraitPlaceholderFrame.width > 0 && portraitPlaceholderFrame.height > 0
-            && portraitPlaceholderFrame.width <= geometry.size.width
-            && portraitPlaceholderFrame.maxY <= geometry.size.height {
-            return portraitPlaceholderFrame
+    /// Stores the inline 16:9 rect reported by the placeholder and forwards it to the
+    /// UIKit host. Only captured in portrait - in cinema/landscape the placeholder is
+    /// laid out with landscape dimensions which would poison the inline rect.
+    private func updateInlineVideoRect(_ frame: CGRect, geometry: GeometryProxy) {
+        guard geometry.size.width < geometry.size.height else { return }
+        guard frame.width > 1, frame.height > 1 else { return }
+        if frame != inlineVideoRect {
+            inlineVideoRect = frame
+            hostVC.setInlineRect(frame)
         }
-        let w = max(geometry.size.width - 24, 100)
-        let h = w * 9 / 16
-        let topY = safeAreaTop + 56
-        return CGRect(x: 12, y: topY, width: w, height: h)
     }
 
     public var body: some View {
         GeometryReader { geometry in
             let isLandscape = geometry.size.width > geometry.size.height
             let isCinema = isFullscreen || isLandscape
-
-            let rect = inlineRect(for: geometry)
-            let panelSize: CGSize = {
-                if isCinema {
-                    if isLandscape {
-                        return geometry.size
-                    } else {
-                        let w = max(geometry.size.width, geometry.size.height)
-                        let h = min(geometry.size.width, geometry.size.height)
-                        return CGSize(width: w, height: h)
-                    }
-                } else {
-                    return rect.size
-                }
-            }()
 
             ZStack(alignment: .topLeading) {
                 Color(red: 0.06, green: 0.06, blue: 0.07).ignoresSafeArea()
@@ -125,24 +190,17 @@ public struct IPTVPlayerView: View {
                 VStack(spacing: 0) {
                     inlineHeaderView(geometry: geometry)
 
-                    // 16:9 Placeholder cho Video Panel (giữ chỗ chuẩn vị trí mà không mount lại player)
+                    // 16:9 Placeholder giữ chỗ + báo vị trí cho UIKit host
                     Color.clear
                         .aspectRatio(16 / 9, contentMode: .fit)
                         .background(
                             GeometryReader { gp in
                                 Color.clear
                                     .onAppear {
-                                        // Only capture while actually in portrait inline mode;
-                                        // in cinema/landscape this placeholder is laid out with
-                                        // landscape dimensions and would poison the inline rect.
-                                        if geometry.size.width < geometry.size.height {
-                                            self.portraitPlaceholderFrame = gp.frame(in: .named("iptvRoot"))
-                                        }
+                                        updateInlineVideoRect(gp.frame(in: .named("iptvRoot")), geometry: geometry)
                                     }
                                     .onChange(of: gp.frame(in: .named("iptvRoot"))) { newValue in
-                                        if geometry.size.width < geometry.size.height {
-                                            self.portraitPlaceholderFrame = newValue
-                                        }
+                                        updateInlineVideoRect(newValue, geometry: geometry)
                                     }
                             }
                         )
@@ -158,43 +216,45 @@ public struct IPTVPlayerView: View {
                 .opacity(isCinema ? 0.0 : 1.0)
                 .allowsHitTesting(!isCinema)
 
-                // 2. Video Panel: Render trực tiếp tại ZStack gốc (KHÔNG BAO GIỜ bị unmount/recreate)
-                videoPanel(isCinema: isCinema, size: panelSize)
-                    .position(
-                        isCinema
-                            ? CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
-                            : CGPoint(x: rect.midX, y: rect.midY)
-                    )
-                    .shadow(color: isCinema ? .clear : .black.opacity(0.35), radius: 8, y: 4)
+                // 2. Player surface: host UIKit luôn phủ toàn màn hình, tự quản lý
+                //    frame của player view (inline rect <-> fullscreen). Không bao giờ
+                //    unmount -> stream không bị ngắt khi chuyển chế độ.
+                IPTVPlayerHostRepresentable(hostVC: hostVC)
+                    .ignoresSafeArea()
                     .zIndex(10)
 
-                // 3. Lớp điều khiển Cinema / Fullscreen (Overlay trên Video Panel)
+                // 3. Inline controls nằm TRÊN video (đúng vị trí placeholder)
+                if !isCinema, inlineVideoRect.width > 1 {
+                    inlineControlsOverlay
+                        .frame(width: inlineVideoRect.width, height: inlineVideoRect.height)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                                .allowsHitTesting(false)
+                        )
+                        .position(x: inlineVideoRect.midX, y: inlineVideoRect.midY)
+                        .zIndex(15)
+                }
+
+                // 4. Lớp điều khiển Cinema / Fullscreen
                 if isCinema {
                     fullscreenOverlay(geometry: geometry)
                         .zIndex(20)
                 }
             }
             .coordinateSpace(name: "iptvRoot")
-            .onChange(of: isFullscreen) { isFull in
-                let target: CGSize
-                if isFull {
-                    let w = max(geometry.size.width, geometry.size.height)
-                    let h = min(geometry.size.width, geometry.size.height)
-                    target = CGSize(width: w, height: h)
-                } else {
-                    target = rect.size
-                }
-                playerVC.syncVideoSurfaceLayout(size: target)
+            .onAppear {
+                hostVC.setDisplayMode(isCinema ? .fullscreen : .inline, animated: false)
             }
-            .onChange(of: geometry.size) { newSize in
-                let isLand = newSize.width > newSize.height
-                let target: CGSize
-                if isFullscreen || isLand {
-                    target = isLand ? newSize : CGSize(width: max(newSize.width, newSize.height), height: min(newSize.width, newSize.height))
-                } else {
-                    target = rect.size
+            .onChange(of: isCinema) { cinema in
+                // Single driver for the surface mode: entering/exiting fullscreen and
+                // device rotation both flow through here. On exit, isCinema only flips
+                // after the rotation to portrait completes, so the video stays
+                // fullscreen during the rotation animation and then glides back.
+                hostVC.setDisplayMode(cinema ? .fullscreen : .inline, animated: true)
+                if !cinema {
+                    showFullscreenDrawer = false
                 }
-                playerVC.syncVideoSurfaceLayout(size: target)
             }
         }
         .ignoresSafeArea()
@@ -210,31 +270,6 @@ public struct IPTVPlayerView: View {
         .sheet(isPresented: $showAudioTrackSheet) {
             audioTracksSheet
         }
-    }
-
-    // MARK: - Video Panel (Always Mounted)
-
-    private func videoPanel(isCinema: Bool, size: CGSize) -> some View {
-        ZStack {
-            MPVPlayerRepresentable(playerVC: playerVC, targetSize: size)
-                .frame(width: size.width, height: size.height)
-
-            // Inline controls overlay
-            if !isCinema {
-                inlineControlsOverlay
-            }
-        }
-        .frame(width: size.width, height: size.height)
-        .background(Color.black)
-        .clipShape(RoundedRectangle(cornerRadius: isCinema ? 0 : 12))
-        .overlay(
-            Group {
-                if !isCinema {
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
-                }
-            }
-        )
     }
 
     // MARK: - Inline Controls Overlay
