@@ -454,7 +454,8 @@ public struct IPTVPlayerView: View {
             audioUrl: nil,
             requestHeaders: ch.httpHeaders,
             subtitles: [],
-            decryptionKey: ch.licenseKey
+            decryptionKey: ch.licenseKey,
+            isDash: ch.isMPEG_DASH
         )
         playerVC.playPlayback()
         isPlaying = true

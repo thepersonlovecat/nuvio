@@ -244,6 +244,7 @@ private struct PendingLoadRequest {
     let requestHeaders: [String: String]
     let subtitles: [PluginSubtitle]
     let decryptionKey: String?
+    let isDash: Bool?
     let queuedAtUptime: TimeInterval
 }
 
@@ -536,7 +537,8 @@ final class MPVPlayerViewController: UIViewController {
         audioUrl: String? = nil,
         requestHeaders: [String: String] = [:],
         subtitles: [PluginSubtitle] = [],
-        decryptionKey: String? = nil
+        decryptionKey: String? = nil,
+        isDash: Bool? = nil
     ) {
         let request = PendingLoadRequest(
             urlString: urlString,
@@ -544,6 +546,7 @@ final class MPVPlayerViewController: UIViewController {
             requestHeaders: requestHeaders,
             subtitles: subtitles,
             decryptionKey: decryptionKey,
+            isDash: isDash,
             queuedAtUptime: ProcessInfo.processInfo.systemUptime
         )
 
@@ -585,12 +588,18 @@ final class MPVPlayerViewController: UIViewController {
         applyRequestHeaders(sanitizedHeaders)
 
         if let cleanKey = IPTVChannel.extractKeyHex(from: request.decryptionKey), !cleanKey.isEmpty {
+            let isMpd = request.isDash ?? (
+                request.urlString.lowercased().contains(".mpd") ||
+                request.urlString.lowercased().contains("manifest=mpd") ||
+                request.urlString.lowercased().contains("/dash/")
+            )
             // In FFmpeg / libavformat:
-            // DASH MPD demuxer (dashdec) requires: cenc_decryption_key=<key_hex>
-            // MOV / MP4 / HLS demuxer (mov) requires: decryption_key=<key_hex>
-            let lavfOptions = "cenc_decryption_key=\(cleanKey),decryption_key=\(cleanKey)"
+            // DASH MPD demuxer (dashdec) strictly accepts ONLY: cenc_decryption_key=<key_hex>
+            // MOV / MP4 / HLS demuxers accept: decryption_key=<key_hex>
+            // Passing unrecognized options to a demuxer causes FFmpeg to abort with "Option not found".
+            let lavfOptions = isMpd ? "cenc_decryption_key=\(cleanKey)" : "decryption_key=\(cleanKey)"
             checkError(mpv_set_property_string(mpv, "demuxer-lavf-o", lavfOptions))
-            print("[MPV ClearKey] Configured DRM decryption options: \(lavfOptions)")
+            print("[MPV ClearKey] Configured DRM decryption options: \(lavfOptions) for \(isMpd ? "MPEG-DASH" : "HLS/MP4")")
         } else {
             checkError(mpv_set_property_string(mpv, "demuxer-lavf-o", ""))
         }

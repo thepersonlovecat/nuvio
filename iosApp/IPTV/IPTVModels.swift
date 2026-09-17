@@ -87,33 +87,43 @@ public struct IPTVChannel: Identifiable, Codable, Hashable {
         cleaned = cleaned.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
         if cleaned.isEmpty { return nil }
 
-        // JSON JWK format: {"keys":[{"kty":"oct","k":"...","kid":"..."}]}
+        // 1. JSON JWK or Kodi dictionary format
         if cleaned.hasPrefix("{") {
             if let data = cleaned.data(using: .utf8),
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let keys = json["keys"] as? [[String: Any]],
-               let firstKey = keys.first,
-               let kB64 = firstKey["k"] as? String {
-                return decodeBase64URLToHex(kB64)
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                // JWK format: {"keys":[{"kty":"oct","k":"...","kid":"..."}]}
+                if let keys = json["keys"] as? [[String: Any]],
+                   let firstKey = keys.first,
+                   let kB64 = firstKey["k"] as? String,
+                   let hex = decodeBase64URLToHex(kB64) {
+                    return cleanHex(hex)
+                }
+                // Kodi JSON dictionary format: {"<KID>": "<KEY>"}
+                for (_, val) in json {
+                    if let keyStr = val as? String, !keyStr.isEmpty {
+                        return cleanHex(keyStr)
+                    }
+                }
             }
             if let regex = try? NSRegularExpression(pattern: "\"k\"\\s*:\\s*\"([^\"]+)\""),
                let match = regex.firstMatch(in: cleaned, range: NSRange(location: 0, length: cleaned.utf16.count)),
                match.numberOfRanges > 1,
-               let range = Range(match.range(at: 1), in: cleaned) {
-                return decodeBase64URLToHex(String(cleaned[range]))
+               let range = Range(match.range(at: 1), in: cleaned),
+               let hex = decodeBase64URLToHex(String(cleaned[range])) {
+                return cleanHex(hex)
             }
         }
 
-        // KID:KEY format -> take KEY (second/last component)
+        // 2. KID:KEY format -> take KEY (second/last component)
         if cleaned.contains(":") {
             let parts = cleaned.components(separatedBy: ":")
             if parts.count >= 2 {
                 let candidate = parts[parts.count - 1].trimmingCharacters(in: .whitespacesAndNewlines)
-                if !candidate.isEmpty { return candidate }
+                if !candidate.isEmpty { return cleanHex(candidate) }
             }
         }
 
-        return cleaned
+        return cleanHex(cleaned)
     }
 
     public static func extractKidHex(from rawInput: String?) -> String? {
@@ -124,11 +134,18 @@ public struct IPTVChannel: Identifiable, Codable, Hashable {
 
         if cleaned.hasPrefix("{") {
             if let data = cleaned.data(using: .utf8),
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let keys = json["keys"] as? [[String: Any]],
-               let firstKey = keys.first,
-               let kidB64 = firstKey["kid"] as? String {
-                return decodeBase64URLToHex(kidB64)
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                // JWK format
+                if let keys = json["keys"] as? [[String: Any]],
+                   let firstKey = keys.first,
+                   let kidB64 = firstKey["kid"] as? String,
+                   let hex = decodeBase64URLToHex(kidB64) {
+                    return cleanHex(hex)
+                }
+                // Kodi JSON dictionary format: {"<KID>": "<KEY>"}
+                if let firstKid = json.keys.first, !firstKid.isEmpty {
+                    return cleanHex(firstKid)
+                }
             }
         }
 
@@ -136,11 +153,20 @@ public struct IPTVChannel: Identifiable, Codable, Hashable {
             let parts = cleaned.components(separatedBy: ":")
             if parts.count >= 2 {
                 let candidate = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
-                if !candidate.isEmpty { return candidate }
+                if !candidate.isEmpty { return cleanHex(candidate) }
             }
         }
 
         return nil
+    }
+
+    public static func cleanHex(_ input: String) -> String {
+        return input
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: "0x", with: "")
+            .replacingOccurrences(of: "0X", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
     }
 
     private static func decodeBase64URLToHex(_ b64url: String) -> String? {
