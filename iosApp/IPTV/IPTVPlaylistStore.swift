@@ -86,19 +86,26 @@ public final class IPTVPlaylistStore: ObservableObject {
         isLoading = true
         errorMessage = nil
 
-        guard sourceURL.startAccessingSecurityScopedResource() else {
-            errorMessage = "Không có quyền truy cập file đã chọn."
-            isLoading = false
-            return false
+        let isSecScoped = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if isSecScoped {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
         }
-        defer { sourceURL.stopAccessingSecurityScopedResource() }
 
         do {
             let data = try Data(contentsOf: sourceURL)
-            guard let content = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .ascii) else {
-                errorMessage = "Không thể đọc nội dung file văn bản."
-                isLoading = false
-                return false
+            let content: String
+            if let str = String(data: data, encoding: .utf8) {
+                content = str
+            } else if let str = String(data: data, encoding: .isoLatin1) {
+                content = str
+            } else if let str = String(data: data, encoding: .windowsCP1252) {
+                content = str
+            } else if let str = String(data: data, encoding: .utf16) {
+                content = str
+            } else {
+                content = String(decoding: data, as: UTF8.self)
             }
 
             let channels = IPTVParser.shared.parse(m3uContent: content)

@@ -81,24 +81,11 @@ public struct IPTVCatalogView: View {
         .sheet(isPresented: $showStorageCleaner) {
             StorageCleanerView()
         }
-        .fileImporter(
-            isPresented: $showFileImporter,
-            allowedContentTypes: [
-                UTType(filenameExtension: "m3u") ?? .plainText,
-                UTType(filenameExtension: "m3u8") ?? .plainText,
-                .plainText,
-                .data
-            ],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                guard let url = urls.first else { return }
+        .sheet(isPresented: $showFileImporter) {
+            DocumentPickerView { url in
                 Task {
                     _ = await store.addLocalFilePlaylist(name: url.deletingPathExtension().lastPathComponent, sourceURL: url)
                 }
-            case .failure(let error):
-                print("[IPTV] File pick error: \(error.localizedDescription)")
             }
         }
         .alert("Đổi Tên Danh Sách", isPresented: $showEditAlert) {
@@ -625,6 +612,7 @@ struct AddPlaylistSheetView: View {
 
     @State private var isSubmitting: Bool = false
     @State private var errorMessage: String? = nil
+    @State private var showLocalDocPicker: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -674,10 +662,7 @@ struct AddPlaylistSheetView: View {
                                         .multilineTextAlignment(.center)
 
                                     Button {
-                                        isPresented = false
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                            showFileImporter = true
-                                        }
+                                        showLocalDocPicker = true
                                     } label: {
                                         Label("Chọn File Từ Thiết Bị", systemImage: "folder.fill")
                                             .font(.headline)
@@ -775,6 +760,23 @@ struct AddPlaylistSheetView: View {
                     Button("Hủy") { isPresented = false }
                 }
             }
+            .sheet(isPresented: $showLocalDocPicker) {
+                DocumentPickerView { pickedUrl in
+                    Task {
+                        isSubmitting = true
+                        errorMessage = nil
+                        let customName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let playlistName = customName.isEmpty ? pickedUrl.deletingPathExtension().lastPathComponent : customName
+                        let success = await store.addLocalFilePlaylist(name: playlistName, sourceURL: pickedUrl)
+                        isSubmitting = false
+                        if success {
+                            isPresented = false
+                        } else {
+                            errorMessage = store.errorMessage ?? "Không thể nạp file playlist."
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -825,6 +827,57 @@ struct AddPlaylistSheetView: View {
             } else {
                 errorMessage = store.errorMessage ?? "Không thể kết nối hoặc nạp kênh."
             }
+        }
+    }
+}
+
+// MARK: - Native Document Picker Bridge
+
+struct DocumentPickerView: UIViewControllerRepresentable {
+    let onPick: (URL) -> Void
+    var onCancel: (() -> Void)? = nil
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPick: onPick, onCancel: onCancel)
+    }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let supportedTypes: [UTType] = [
+            UTType(filenameExtension: "m3u") ?? .item,
+            UTType(filenameExtension: "m3u8") ?? .item,
+            UTType(mimeType: "audio/x-mpegurl") ?? .item,
+            UTType(mimeType: "application/x-mpegurl") ?? .item,
+            UTType(mimeType: "application/vnd.apple.mpegurl") ?? .item,
+            .plainText,
+            .text,
+            .data,
+            .item // Crucial: ensures files from iCloud / Files / Downloads are NEVER grayed out
+        ]
+
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: supportedTypes, asCopy: true)
+        picker.delegate = context.coordinator
+        picker.allowsMultipleSelection = false
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: (URL) -> Void
+        let onCancel: (() -> Void)?
+
+        init(onPick: @escaping (URL) -> Void, onCancel: (() -> Void)?) {
+            self.onPick = onPick
+            self.onCancel = onCancel
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard let url = urls.first else { return }
+            onPick(url)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onCancel?()
         }
     }
 }
