@@ -10,6 +10,18 @@ struct iOSApp: App {
             ContentView()
                 .preferredColorScheme(.dark)
                 .onOpenURL { url in
+                    if url.isFileURL {
+                        let ext = url.pathExtension.lowercased()
+                        if ext == "m3u" || ext == "m3u8" || ext == "txt" || ext.isEmpty {
+                            Task {
+                                _ = await IPTVPlaylistStore.shared.addLocalFilePlaylist(
+                                    name: url.deletingPathExtension().lastPathComponent,
+                                    sourceURL: url
+                                )
+                            }
+                            return
+                        }
+                    }
                     AppUrlBridgeKt.handleAppUrl(url: url.absoluteString)
                 }
         }

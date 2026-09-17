@@ -842,19 +842,8 @@ struct DocumentPickerView: UIViewControllerRepresentable {
     }
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let supportedTypes: [UTType] = [
-            UTType(filenameExtension: "m3u") ?? .item,
-            UTType(filenameExtension: "m3u8") ?? .item,
-            UTType(mimeType: "audio/x-mpegurl") ?? .item,
-            UTType(mimeType: "application/x-mpegurl") ?? .item,
-            UTType(mimeType: "application/vnd.apple.mpegurl") ?? .item,
-            .plainText,
-            .text,
-            .data,
-            .item // Crucial: ensures files from iCloud / Files / Downloads are NEVER grayed out
-        ]
-
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: supportedTypes, asCopy: true)
+        // Passing .item guarantees iOS shows all files without filtering or hiding .m3u/.m3u8 files
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
         picker.delegate = context.coordinator
         picker.allowsMultipleSelection = false
         return picker
