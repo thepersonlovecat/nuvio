@@ -373,8 +373,23 @@ public struct IPTVCatalogView: View {
                         }
 
                     HStack(spacing: 4) {
-                        if channel.isMPEG_DASH {
-                            Text(channel.isClearKey ? "MPD • KEY" : "MPD")
+                        if channel.isClearKey {
+                            HStack(spacing: 3) {
+                                Image(systemName: "key.fill")
+                                    .font(.system(size: 7, weight: .bold))
+                                Text(channel.isMPEG_DASH ? "MPD • DRM" : "DRM")
+                                    .font(.system(size: 8, weight: .heavy))
+                            }
+                            .foregroundStyle(Color(red: 1.0, green: 0.85, blue: 0.25))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2.5)
+                            .background(Color.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 4))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .stroke(Color.yellow.opacity(0.45), lineWidth: 0.5)
+                            )
+                        } else if channel.isMPEG_DASH {
+                            Text("MPD")
                                 .font(.system(size: 8, weight: .black))
                                 .foregroundStyle(.cyan)
                                 .padding(.horizontal, 4)

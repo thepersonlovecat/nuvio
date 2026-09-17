@@ -20,6 +20,7 @@ public final class IPTVParser {
         var currentHeaders: [String: String] = [:]
         var currentLicenseType: String? = nil
         var currentLicenseKey: String? = nil
+        var currentManifestType: String? = nil
 
         var hasPendingMetadata = false
 
@@ -31,6 +32,7 @@ public final class IPTVParser {
                 currentHeaders = [:]
                 currentLicenseType = nil
                 currentLicenseKey = nil
+                currentManifestType = nil
 
                 parseExtInf(
                     line: line,
@@ -51,6 +53,8 @@ public final class IPTVParser {
                         currentHeaders["User-Agent"] = val
                     } else if key.lowercased() == "http-referrer" || key.lowercased() == "http-referer" {
                         currentHeaders["Referer"] = val
+                    } else {
+                        currentHeaders[key] = val
                     }
                 }
             } else if line.hasPrefix("#KODIPROP:") {
@@ -60,9 +64,31 @@ public final class IPTVParser {
                     let val = String(prop[prop.index(after: eqIndex)...]).trimmingCharacters(in: .whitespaces)
 
                     if key.contains("license_type") {
-                        currentLicenseType = val
+                        currentLicenseType = val.lowercased()
                     } else if key.contains("license_key") {
                         currentLicenseKey = val
+                    } else if key.contains("manifest_type") {
+                        currentManifestType = val.lowercased()
+                    } else if key.contains("stream_headers") {
+                        let pairs = val.components(separatedBy: "&")
+                        for pair in pairs {
+                            let parts = pair.components(separatedBy: "=")
+                            if parts.count >= 2 {
+                                let hKey = parts[0].trimmingCharacters(in: .whitespaces)
+                                let hVal = parts.dropFirst().joined(separator: "=").trimmingCharacters(in: .whitespaces)
+                                currentHeaders[hKey] = hVal
+                            }
+                        }
+                    }
+                }
+            } else if line.hasPrefix("#EXTHTTP:") {
+                let jsonPart = String(line.dropFirst("#EXTHTTP:".count)).trimmingCharacters(in: .whitespaces)
+                if let data = jsonPart.data(using: .utf8),
+                   let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    for (k, v) in dict {
+                        if let strVal = v as? String {
+                            currentHeaders[k] = strVal
+                        }
                     }
                 }
             } else if !line.hasPrefix("#") {
@@ -94,7 +120,8 @@ public final class IPTVParser {
                         tvgName: currentTvgName,
                         httpHeaders: currentHeaders,
                         licenseType: currentLicenseType,
-                        licenseKey: currentLicenseKey
+                        licenseKey: currentLicenseKey,
+                        manifestType: currentManifestType
                     )
                     channels.append(channel)
                     hasPendingMetadata = false

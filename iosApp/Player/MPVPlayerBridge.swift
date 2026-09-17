@@ -584,9 +584,13 @@ final class MPVPlayerViewController: UIViewController {
         activeRequestHeaders = sanitizedHeaders
         applyRequestHeaders(sanitizedHeaders)
 
-        if let decryptionKey = request.decryptionKey, !decryptionKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let keyHex = decryptionKey.contains(":") ? String(decryptionKey.split(separator: ":").last ?? "") : decryptionKey
-            checkError(mpv_set_property_string(mpv, "demuxer-lavf-o", "decryption_key=\(keyHex.trimmingCharacters(in: .whitespacesAndNewlines))"))
+        if let cleanKey = IPTVChannel.extractKeyHex(from: request.decryptionKey), !cleanKey.isEmpty {
+            // In FFmpeg / libavformat:
+            // DASH MPD demuxer (dashdec) requires: cenc_decryption_key=<key_hex>
+            // MOV / MP4 / HLS demuxer (mov) requires: decryption_key=<key_hex>
+            let lavfOptions = "cenc_decryption_key=\(cleanKey),decryption_key=\(cleanKey)"
+            checkError(mpv_set_property_string(mpv, "demuxer-lavf-o", lavfOptions))
+            print("[MPV ClearKey] Configured DRM decryption options: \(lavfOptions)")
         } else {
             checkError(mpv_set_property_string(mpv, "demuxer-lavf-o", ""))
         }
@@ -1338,6 +1342,9 @@ final class MPVPlayerViewController: UIViewController {
             let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !key.isEmpty, !value.isEmpty else { return }
             guard key.caseInsensitiveCompare("Range") != .orderedSame else { return }
+            // Filter out internal DRM headers so they don't get sent to remote CDNs
+            guard !key.lowercased().hasPrefix("x-clearkey"),
+                  !key.lowercased().hasPrefix("x-decryption-key") else { return }
             sanitized[key] = value
         }
         return sanitized
@@ -1366,7 +1373,7 @@ final class MPVPlayerViewController: UIViewController {
         }
 
         let serialized = headers
-            .filter { $0.key.caseInsensitiveCompare("User-Agent") != .orderedSame }
+            .filter { $0.key.caseInsensitiveCompare("User-Agent") != .orderedSame && $0.key.caseInsensitiveCompare("Referer") != .orderedSame }
             .sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
             .map { key, value in
                 let escapedValue = value

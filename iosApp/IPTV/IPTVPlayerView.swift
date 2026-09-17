@@ -150,6 +150,19 @@ public struct IPTVPlayerView: View {
                                 .font(.system(size: 15, weight: .bold))
                                 .foregroundStyle(.white)
                                 .lineLimit(1)
+
+                            if currentChannel.isClearKey {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "key.fill")
+                                        .font(.system(size: 8, weight: .black))
+                                    Text(currentChannel.isMPEG_DASH ? "MPD DRM" : "DRM")
+                                        .font(.system(size: 9, weight: .heavy))
+                                }
+                                .foregroundStyle(Color(red: 1.0, green: 0.85, blue: 0.25))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.yellow.opacity(0.2), in: Capsule())
+                            }
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 7)
